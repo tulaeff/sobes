@@ -417,6 +417,7 @@ mark, .hl {
 .modal-body ul { margin: 8px 0; padding-left: 20px; }
 .modal-body li { margin: 5px 0; }
 .modal-body strong { color: #fff; font-weight: 650; }
+.modal-body hr { border: none; border-top: 1px solid var(--border-2); margin: 16px 0; }
 .modal-body code {
   font-family: var(--mono); font-size: 13px; background: var(--panel-2);
   border: 1px solid var(--border); border-radius: 5px; padding: 1px 5px; color: #e9c8ff;

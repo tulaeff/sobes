@@ -27,7 +27,8 @@
     function flushL() { if (list) { html += '</ul>'; list = false; } }
     for (var i = 0; i < lines.length; i++) {
       var ln = lines[i], m = ln.match(/^\s*[-*]\s+(.*)$/);
-      if (m) { flushP(); if (!list) { html += '<ul>'; list = true; } html += '<li>' + mdInline(m[1]) + '</li>'; }
+      if (/^\s*(-{3,}|\*{3,})\s*$/.test(ln)) { flushP(); flushL(); html += '<hr>'; }
+      else if (m) { flushP(); if (!list) { html += '<ul>'; list = true; } html += '<li>' + mdInline(m[1]) + '</li>'; }
       else if (!ln.trim()) { flushL(); flushP(); }
       else { flushL(); para.push(mdInline(ln)); }
     }

@@ -54,7 +54,7 @@ foreach ($cats as $ci => $c) {
 }
 
 $insS = $pdo->prepare('INSERT INTO settings(key, value) VALUES (:k, :v) ON CONFLICT (key) DO NOTHING');
-foreach (['self', 'task'] as $k) {
+foreach (['self', 'task', 'jobs', 'ask'] as $k) {
     $insS->execute([':k' => $k, ':v' => json_encode($personal[$k] ?? new stdClass(), JSON_UNESCAPED_UNICODE)]);
 }
 

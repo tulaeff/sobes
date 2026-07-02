@@ -74,7 +74,7 @@ function buildPayload(): string {
     }, $rows);
 
     $personal = [];
-    foreach ($pdo->query("SELECT key, value FROM settings WHERE key IN ('self','task')") as $s) {
+    foreach ($pdo->query("SELECT key, value FROM settings WHERE key IN ('self','task','jobs','ask')") as $s) {
         $personal[$s['key']] = json_decode($s['value'], true);
     }
 
@@ -182,7 +182,7 @@ try {
     }
 
     // PATCH /personal/{self|task}  {title, body}
-    if (($method === 'PATCH' || $method === 'POST') && preg_match('#^/personal/(self|task)$#', $path, $m)) {
+    if (($method === 'PATCH' || $method === 'POST') && preg_match('#^/personal/(self|task|jobs|ask)$#', $path, $m)) {
         $b = body();
         $cur = ['title' => '', 'body' => ''];
         $row = db()->prepare('SELECT value FROM settings WHERE key = :k');
