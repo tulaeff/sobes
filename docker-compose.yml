@@ -1,0 +1,61 @@
+services:
+  web:
+    image: nginx:alpine
+    container_name: sobes-web
+    restart: unless-stopped
+    volumes:
+      - ./public:/usr/share/nginx/html:ro
+      - ./docker/site.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - proxy-network
+      - sobes-internal
+    depends_on:
+      - php
+
+  php:
+    build: ./docker/php
+    container_name: sobes-php
+    restart: unless-stopped
+    environment:
+      PGHOST: postgres
+      PGDATABASE: sobes
+      PGUSER: sobes
+      PGPASSWORD: sobes
+      REDIS_HOST: redis
+    volumes:
+      - ./api:/var/www/api:ro
+      - ./db:/var/www/db:ro
+      - ./public:/var/www/public:ro
+    networks:
+      - sobes-internal
+    depends_on:
+      - postgres
+      - redis
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: sobes-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: sobes
+      POSTGRES_USER: sobes
+      POSTGRES_PASSWORD: sobes
+    volumes:
+      - sobes-pgdata:/var/lib/postgresql/data
+    networks:
+      - sobes-internal
+
+  redis:
+    image: redis:7-alpine
+    container_name: sobes-redis
+    restart: unless-stopped
+    networks:
+      - sobes-internal
+
+networks:
+  proxy-network:
+    external: true
+  sobes-internal: {}
+
+volumes:
+  sobes-pgdata: {}
