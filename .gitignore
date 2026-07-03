@@ -3,3 +3,9 @@
 node_modules/
 .idea/
 .claude
+
+# данные — источник правды в Postgres (том sobes-pgdata), в git не держим.
+# json ниже нужны только для первичной заливки через seed.php и постоянно разъезжаются с БД.
+db/personal.json
+db/categories.json
+public/data/parts/*.json
