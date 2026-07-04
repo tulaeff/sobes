@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0d10">
   <title>Шпаргалка PHP · собес</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c6cff'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'%3E%3C?%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=19">
+  <link rel="stylesheet" href="/styles.css?v=56">
 </head>
 <body>
   <div id="app">
@@ -19,34 +19,94 @@
           <small id="stat-line">загрузка…</small>
         </div>
       </div>
-      <div class="personal">
-        <button class="pbtn" data-personal="self" type="button">👤 Расскажи о себе</button>
-        <button class="pbtn" data-personal="task" type="button">💡 Сложная / интересная задача</button>
-        <button class="pbtn" data-personal="jobs" type="button">🏢 Последние 3 места работы</button>
-        <button class="pbtn" data-personal="ask" type="button">❓ Вопросы (что спросить)</button>
+      <div id="sidebar-main">
+        <div class="personal">
+          <button id="openVacancy" class="pbtn" type="button">📋 Текущая вакансия</button>
+        </div>
+        <div class="tools">
+          <a id="openSources" class="pbtn tool" href="#monitoring">📡 Мониторинг вакансий</a>
+        </div>
+        <nav id="cats" class="cats"></nav>
+        <div class="side-foot">
+          <button id="unpinAll" class="foot-btn danger" hidden>Снять все закрепы</button>
+          <div class="foot-hints"><kbd>/</kbd> поиск · <kbd>↑</kbd><kbd>↓</kbd> навигация · <kbd>Enter</kbd> подробнее · <kbd>Esc</kbd> сброс</div>
+        </div>
       </div>
-      <nav id="cats" class="cats"></nav>
-      <div class="side-foot">
-        <button id="unpinAll" class="foot-btn danger" hidden>Снять все закрепы</button>
-        <div class="foot-hints"><kbd>/</kbd> поиск · <kbd>↑</kbd><kbd>↓</kbd> навигация · <kbd>Enter</kbd> подробнее · <kbd>Esc</kbd> сброс</div>
+      <div id="sidebar-mon" hidden>
+        <div class="tools">
+          <a id="backHome" class="pbtn tool" href="#">← На главную</a>
+        </div>
+        <div class="src-side-head">Показать</div>
+        <div id="vac-filters" class="vac-filters"></div>
+        <div class="src-side-head">Источники</div>
+        <div id="src-list" class="src-list"></div>
       </div>
     </aside>
 
     <main id="main">
-      <header id="topbar">
-        <div class="search-wrap">
-          <svg class="search-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input id="q" type="search" inputmode="search" autocomplete="off" autocorrect="off"
-                 spellcheck="false" placeholder="Найти ответ… (изоляция транзакций, ===, Doctrine, outbox)" aria-label="Поиск">
-          <button id="clear" class="clear" title="Очистить (Esc)" aria-label="Очистить" hidden>&times;</button>
-        </div>
-      </header>
+      <div id="cheatsheet-view">
+        <header id="topbar">
+          <div class="search-wrap">
+            <svg class="search-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            <input id="q" type="search" inputmode="search" autocomplete="off" autocorrect="off"
+                   spellcheck="false" placeholder="Найти ответ… (изоляция транзакций, ===, Doctrine, outbox)" aria-label="Поиск">
+            <button id="clear" class="clear" title="Очистить (Esc)" aria-label="Очистить" hidden>&times;</button>
+          </div>
+          <button id="suff-toggle" class="mode-btn" type="button" title="Суфлёр — подсказки из базы по речи собеседника (вместо закреплённых)">🎧 Суфлёр</button>
+        </header>
 
-      <div id="counter" class="counter"></div>
-      <section id="results" class="results"></section>
-      <div id="empty" class="empty" hidden>
-        <b>Ничего не нашлось</b>
+        <div id="suff-bar" class="suff-bar" hidden>
+          <span id="suff-status" class="suff-status">готов</span>
+          <button id="suff-ptt" class="suff-ptt" type="button" title="Зажми и скажи своим голосом, что искать (когда собеседник сказал невнятно)">🎤 зажми — скажи</button>
+          <span class="suff-hintline">вопрос ловится по речи собеседника или впиши его в поиск ↑</span>
+          <div id="suff-transcript" class="suff-transcript" aria-live="polite"></div>
+        </div>
+
+        <div id="counter" class="counter"></div>
+        <section id="results" class="results"></section>
+        <div id="empty" class="empty" hidden>
+          <b>Ничего не нашлось</b>
+        </div>
       </div>
+
+      <section id="monitoring-view" class="mon-page" hidden>
+        <div class="mon-inner">
+          <div class="mon-top">
+            <h1>📡 Мониторинг вакансий</h1>
+            <div class="bell-wrap">
+              <button id="bell" type="button" class="bell" title="Уведомления">🔔<span id="bell-count" class="bell-count" hidden>0</span></button>
+              <div id="bell-panel" class="bell-panel" hidden></div>
+            </div>
+          </div>
+          <div class="src-add">
+            <div class="src-tabs">
+              <button type="button" class="src-tab active" data-kind="tg">📨 Телеграм-чат</button>
+              <button type="button" class="src-tab" data-kind="account">🌐 Аккаунт / сайт</button>
+            </div>
+            <div class="src-add-row">
+              <div id="src-fields-tg" class="src-fields">
+                <select id="src-file"></select>
+              </div>
+              <div id="src-fields-account" class="src-fields" hidden>
+                <input id="src-url" type="text" placeholder="URL (https://hh.ru/… или https://career.habr.com/…)">
+                <input id="src-login" type="text" autocomplete="off" placeholder="Логин / email">
+                <input id="src-password" type="password" autocomplete="new-password" placeholder="Пароль">
+              </div>
+              <button id="src-add-btn" type="button" class="btn primary">Добавить</button>
+            </div>
+          </div>
+
+          <div class="vac-head">
+            <h2>Подходящие вакансии <span id="vac-count" class="vac-count"></span></h2>
+            <div class="vac-actions">
+              <span id="analyze-status" class="analyze-status"></span>
+            </div>
+          </div>
+          <div id="vac-stats" class="vac-stats"></div>
+          <div id="vac-list" class="vac-list"></div>
+        </div>
+      </section>
+
     </main>
   </div>
 
@@ -60,8 +120,8 @@
     </div>
   </div>
 
-  <script src="/api.js?v=19"></script>
-  <script src="/search.js?v=19"></script>
-  <script src="/app.js?v=19"></script>
+  <script src="/api.js?v=56"></script>
+  <script src="/search.js?v=56"></script>
+  <script src="/app.js?v=56"></script>
 </body>
 </html>

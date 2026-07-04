@@ -110,6 +110,203 @@ try {
         exit;
     }
 
+    // --- источники мониторинга вакансий ---
+    // GET /tg-files — список файлов выгрузки в .claude/tg_history
+    if ($method === 'GET' && $path === '/tg-files') {
+        $dir = '/var/www/tg_history';
+        $files = [];
+        if (is_dir($dir)) {
+            foreach (scandir($dir) as $f) {
+                if ($f === '.' || $f === '..' || is_dir("$dir/$f")) continue;
+                $files[] = $f;
+            }
+        }
+        sort($files);
+        out($files);
+    }
+    // GET /sources
+    if ($method === 'GET' && $path === '/sources') {
+        $rows = db()->query('SELECT id, kind, title, value, login, password, enabled, auto_apply FROM sources ORDER BY kind, id')->fetchAll();
+        out(array_map(static function (array $r): array {
+            return ['id' => (string)$r['id'], 'kind' => $r['kind'], 'title' => $r['title'],
+                    'value' => $r['value'], 'login' => $r['login'],
+                    'hasPassword' => $r['password'] !== '', 'enabled' => (bool)$r['enabled'],
+                    'autoApply' => (bool)$r['auto_apply']];
+        }, $rows));
+    }
+    // POST /sources  {kind, title, value, login?, password?}
+    if ($method === 'POST' && $path === '/sources') {
+        $b = body();
+        $kind = ($b['kind'] ?? '') === 'account' ? 'account' : 'tg';
+        $st = db()->prepare('INSERT INTO sources(kind, title, value, login, password) VALUES (:k, :t, :v, :l, :p)
+                             ON CONFLICT (kind, value) DO NOTHING RETURNING id');
+        $st->execute([
+            ':k' => $kind, ':t' => trim((string)($b['title'] ?? '')), ':v' => trim((string)($b['value'] ?? '')),
+            ':l' => trim((string)($b['login'] ?? '')), ':p' => (string)($b['password'] ?? ''),
+        ]);
+        $id = $st->fetchColumn();
+        if ($id === false) out(['ok' => true, 'existed' => true]); // такой источник уже есть
+        out(['ok' => true, 'id' => (string)$id]);
+    }
+    // PATCH /sources/{id}  {enabled}
+    if ($method === 'PATCH' && preg_match('#^/sources/(\d+)$#', $path, $m)) {
+        $b = body();
+        if (array_key_exists('enabled', $b)) {
+            db()->prepare('UPDATE sources SET enabled = :e WHERE id = :id')
+                ->execute([':e' => $b['enabled'] ? 'true' : 'false', ':id' => (int)$m[1]]);
+        }
+        if (array_key_exists('auto_apply', $b)) {
+            db()->prepare('UPDATE sources SET auto_apply = :a WHERE id = :id')
+                ->execute([':a' => $b['auto_apply'] ? 'true' : 'false', ':id' => (int)$m[1]]);
+        }
+        out(['ok' => true]);
+    }
+    // DELETE /sources/{id}
+    if ($method === 'DELETE' && preg_match('#^/sources/(\d+)$#', $path, $m)) {
+        db()->prepare('DELETE FROM sources WHERE id = :id')->execute([':id' => (int)$m[1]]);
+        out(['ok' => true]);
+    }
+
+    // --- найденные вакансии ---
+    // GET /vacancies
+    if ($method === 'GET' && $path === '/vacancies') {
+        $rows = db()->query('SELECT v.id, v.source_id, v.chat, v.score, v.title, v.reason, v.link, v.text, v.link_text, v.mismatches,
+                                    v.apply_status, v.applied_at, v.cover_letter, v.apply_note, v.company, v.company_url,
+                                    COALESCE(s.kind, \'tg\') AS kind
+                             FROM vacancies v LEFT JOIN sources s ON s.id = v.source_id
+                             ORDER BY v.score DESC, v.created_at DESC')->fetchAll();
+        // дедуп по нормализованному заголовку (одна вакансия с hh-сайта и из тг-канала hh-бота = дубль):
+        // на группу оставляем богатейшую строку — уже откликнутую > с полным описанием > выше score
+        $groups = []; $loose = [];
+        foreach ($rows as $r) {
+            $k = preg_replace('/\s+/u', ' ', mb_strtolower(trim((string)$r['title'])));
+            if ($k === '') { $loose[] = $r; continue; }
+            $rank = ($r['apply_status'] === 'applied' ? 1000000 : 0)
+                  + ($r['apply_status'] === 'needs_manual' ? 500000 : 0)
+                  + ((string)$r['link_text'] !== '' ? 100000 : 0)
+                  + (int)$r['score'];
+            if (!isset($groups[$k]) || $rank > $groups[$k]['_rank']) { $r['_rank'] = $rank; $groups[$k] = $r; }
+        }
+        $rows = array_merge(array_values($groups), $loose);
+        usort($rows, static function (array $a, array $b): int { return ((int)$b['score']) <=> ((int)$a['score']); });
+        out(array_map(static function (array $r): array {
+            return ['id' => (string)$r['id'], 'sourceId' => $r['source_id'] === null ? '' : (string)$r['source_id'], 'chat' => $r['chat'], 'score' => (int)$r['score'],
+                    'title' => $r['title'], 'reason' => $r['reason'], 'link' => $r['link'], 'text' => $r['text'],
+                    'linkText' => $r['link_text'], 'kind' => $r['kind'],
+                    'applyStatus' => $r['apply_status'], 'appliedAt' => $r['applied_at'],
+                    'coverLetter' => $r['cover_letter'], 'applyNote' => $r['apply_note'],
+                    'company' => $r['company'], 'companyUrl' => $r['company_url'],
+                    'mismatches' => json_decode($r['mismatches'] ?: '[]', true) ?: []];
+        }, $rows));
+    }
+    // DELETE /vacancies/{id}
+    if ($method === 'DELETE' && preg_match('#^/vacancies/(\d+)$#', $path, $m)) {
+        db()->prepare('DELETE FROM vacancies WHERE id = :id')->execute([':id' => (int)$m[1]]);
+        out(['ok' => true]);
+    }
+    // PATCH /vacancies/{id}/apply {apply_status?, cover_letter?, apply_note?}
+    // ставит агент: черновик (queued+cover_letter), applied (+applied_at), needs_manual (+заметка -> уведомление)
+    if ($method === 'PATCH' && preg_match('#^/vacancies/(\d+)/apply$#', $path, $m)) {
+        $id = (int)$m[1];
+        $b = body();
+        $allowed = ['new', 'queued', 'approved', 'applied', 'needs_manual', 'skipped'];
+        $status = in_array($b['apply_status'] ?? '', $allowed, true) ? (string)$b['apply_status'] : null;
+        $sets = []; $args = [':id' => $id];
+        if ($status !== null) { $sets[] = 'apply_status = :st'; $args[':st'] = $status; }
+        if (array_key_exists('cover_letter', $b)) { $sets[] = 'cover_letter = :cl'; $args[':cl'] = (string)$b['cover_letter']; }
+        if (array_key_exists('apply_note', $b))   { $sets[] = 'apply_note = :an';   $args[':an'] = (string)$b['apply_note']; }
+        if ($status === 'applied') { $sets[] = 'applied_at = now()'; }
+        if (!$sets) fail('nothing to update');
+        db()->prepare('UPDATE vacancies SET ' . implode(', ', $sets) . ' WHERE id = :id')->execute($args);
+        if ($status === 'needs_manual') { // нужна твоя рука -> под колокольчик
+            $q = db()->prepare('SELECT title FROM vacancies WHERE id = :id'); $q->execute([':id' => $id]);
+            db()->prepare("INSERT INTO notifications(vacancy_id, kind, title, body) VALUES (:vid, 'needs_manual', :t, :b)")
+                ->execute([':vid' => $id, ':t' => (string)$q->fetchColumn(),
+                           ':b' => (string)($b['apply_note'] ?? 'Нужна ручная форма/тест для отклика')]);
+        }
+        out(['ok' => true]);
+    }
+    // POST /vacancies/{id}/approve — пользователь одобряет отправку отклика
+    if ($method === 'POST' && preg_match('#^/vacancies/(\d+)/approve$#', $path, $m)) {
+        db()->prepare("UPDATE vacancies SET apply_status = 'approved' WHERE id = :id AND apply_status IN ('queued','needs_manual')")
+            ->execute([':id' => (int)$m[1]]);
+        out(['ok' => true]);
+    }
+    // POST /vacancies/{id}/skip — пользователь пропускает отклик
+    if ($method === 'POST' && preg_match('#^/vacancies/(\d+)/skip$#', $path, $m)) {
+        db()->prepare("UPDATE vacancies SET apply_status = 'skipped' WHERE id = :id")->execute([':id' => (int)$m[1]]);
+        out(['ok' => true]);
+    }
+    // POST /applied/check — запрос сверки откликов (сессия/агент подхватит и проверит по hh/Хабру)
+    if ($method === 'POST' && $path === '/applied/check') {
+        db()->prepare("INSERT INTO settings(key, value) VALUES ('applied_check_requested', :v)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
+            ->execute([':v' => json_encode(['at' => date('c')], JSON_UNESCAPED_UNICODE)]);
+        out(['ok' => true]);
+    }
+    // PATCH /vacancies/{id}/company {company?, company_url?} — найденный сайт/раздел вакансий компании
+    if ($method === 'PATCH' && preg_match('#^/vacancies/(\d+)/company$#', $path, $m)) {
+        $b = body(); $sets = []; $args = [':id' => (int)$m[1]];
+        if (array_key_exists('company', $b))     { $sets[] = 'company = :c';      $args[':c'] = (string)$b['company']; }
+        if (array_key_exists('company_url', $b)) { $sets[] = 'company_url = :u';  $args[':u'] = (string)$b['company_url']; }
+        if ($sets) db()->prepare('UPDATE vacancies SET ' . implode(', ', $sets) . ' WHERE id = :id')->execute($args);
+        out(['ok' => true]);
+    }
+    // GET /notifications — список + счётчик непрочитанных
+    if ($method === 'GET' && $path === '/notifications') {
+        $rows = db()->query('SELECT id, vacancy_id, kind, title, body, read, created_at FROM notifications
+                             ORDER BY read, created_at DESC LIMIT 100')->fetchAll();
+        $unread = (int)db()->query('SELECT count(*) FROM notifications WHERE NOT read')->fetchColumn();
+        out(['unread' => $unread, 'items' => array_map(static function (array $r): array {
+            return ['id' => (string)$r['id'], 'vacancyId' => $r['vacancy_id'] !== null ? (string)$r['vacancy_id'] : null,
+                    'kind' => $r['kind'], 'title' => $r['title'], 'body' => $r['body'],
+                    'read' => (bool)$r['read'], 'createdAt' => $r['created_at']];
+        }, $rows)]);
+    }
+    // POST /notifications/read {id?} — без id помечает прочитанными все
+    if ($method === 'POST' && $path === '/notifications/read') {
+        $b = body();
+        if (isset($b['id'])) db()->prepare('UPDATE notifications SET read = true WHERE id = :id')->execute([':id' => (int)$b['id']]);
+        else db()->query('UPDATE notifications SET read = true WHERE NOT read');
+        out(['ok' => true]);
+    }
+    // POST /analyze/request — ручной запрос прогона (крон подхватит)
+    if ($method === 'POST' && $path === '/analyze/request') {
+        db()->prepare("INSERT INTO settings(key, value) VALUES ('analyze_requested', :v)
+                       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value")
+            ->execute([':v' => json_encode(['at' => date('c')], JSON_UNESCAPED_UNICODE)]);
+        out(['ok' => true]);
+    }
+    // GET /analyze/status — последний прогон / есть ли запрос
+    if ($method === 'GET' && $path === '/analyze/status') {
+        $st = [];
+        foreach (db()->query("SELECT key, value FROM settings WHERE key IN ('analyze_requested','analyze_last')") as $r) {
+            $st[$r['key']] = json_decode($r['value'], true);
+        }
+        out(['requested' => $st['analyze_requested'] ?? null, 'last' => $st['analyze_last'] ?? null]);
+    }
+
+    // --- лог работы агента ---
+    // GET /log — последние записи (новые сверху)
+    if ($method === 'GET' && $path === '/log') {
+        $rows = db()->query('SELECT id, kind, message, meta, created_at FROM agent_log ORDER BY created_at DESC, id DESC LIMIT 300')->fetchAll();
+        out(array_map(static function (array $r): array {
+            return ['id' => (string)$r['id'], 'kind' => $r['kind'], 'message' => $r['message'],
+                    'meta' => json_decode($r['meta'] ?: '{}', true), 'createdAt' => $r['created_at']];
+        }, $rows));
+    }
+    // POST /log {message, kind?, meta?} — добавить запись (пишет агент)
+    if ($method === 'POST' && $path === '/log') {
+        $b = body();
+        db()->prepare('INSERT INTO agent_log(kind, message, meta) VALUES (:k, :m, :meta)')
+            ->execute([
+                ':k'    => (string)($b['kind'] ?? ''),
+                ':m'    => (string)($b['message'] ?? ''),
+                ':meta' => json_encode((object)($b['meta'] ?? []), JSON_UNESCAPED_UNICODE),
+            ]);
+        out(['ok' => true]);
+    }
+
     // POST /cards/{id}/pin  {pinned: bool}
     if ($method === 'POST' && preg_match('#^/cards/(\d+)/pin$#', $path, $m)) {
         $pinned = (bool)(body()['pinned'] ?? false);

@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd-агент авто-мониторинга вакансий (раз в час, ТОЛЬКО телеграм).
+  Сайты (hh/Хабр) сюда НЕ входят — им нужен живой залогиненный браузер (только /scan_all в сессии).
+
+  Установка:
+    1) cp scripts/com.sobes.monitor.plist ~/Library/LaunchAgents/
+    2) launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.sobes.monitor.plist
+  Ключ (для скоринга Claude в кроне) — в ~/.config/sobes/env одной строкой:
+    ANTHROPIC_API_KEY=sk-ant-...
+  Без ключа прогон логируется как пропущенный (курсор тг всё равно двигается).
+  Разовый прогон: launchctl kickstart -k gui/$(id -u)/com.sobes.monitor
+  Выключить: launchctl bootout gui/$(id -u)/com.sobes.monitor
+  Лог: ~/Library/Logs/sobes-monitor.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sobes.monitor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/ivangrigorov/Работа/phpStormProjects/Citrus-media/sobes.local/scripts/monitor_run.sh</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/Users/ivangrigorov/Library/Logs/sobes-monitor.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ivangrigorov/Library/Logs/sobes-monitor.log</string>
+</dict>
+</plist>
