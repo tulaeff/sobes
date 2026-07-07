@@ -15,20 +15,30 @@ $pdo = new PDO(
 
 $pdo->beginTransaction();
 
+// тг-источники всегда требуют ручного отклика (контакт в посте, автоформы нет) — сразу в "Ручной разбор"
+$tgSourceIds = array_map('intval', array_column(
+    $pdo->query("SELECT id FROM sources WHERE kind = 'tg'")->fetchAll(PDO::FETCH_ASSOC),
+    'id'
+));
+
 $ins = $pdo->prepare(
-    'INSERT INTO vacancies(source_id, chat, msg_id, score, title, reason, link, text, link_text, mismatches)
-     VALUES (:sid, :chat, :mid, :score, :title, :reason, :link, :text, :ltext, :miss)
+    'INSERT INTO vacancies(source_id, chat, msg_id, score, title, reason, link, text, link_text, mismatches, apply_status, apply_note)
+     VALUES (:sid, :chat, :mid, :score, :title, :reason, :link, :text, :ltext, :miss, :st, :note)
      ON CONFLICT (source_id, msg_id) DO NOTHING'
 );
 $saved = 0;
 foreach (($in['matches'] ?? []) as $v) {
+    $sid = (int)$v['source_id'];
+    $isTg = in_array($sid, $tgSourceIds, true);
     $ins->execute([
-        ':sid' => (int)$v['source_id'], ':chat' => (string)($v['chat'] ?? ''), ':mid' => (int)$v['msg_id'],
+        ':sid' => $sid, ':chat' => (string)($v['chat'] ?? ''), ':mid' => (int)$v['msg_id'],
         ':score' => (int)($v['score'] ?? 0), ':title' => (string)($v['title'] ?? ''),
         ':reason' => (string)($v['reason'] ?? ''), ':link' => (string)($v['link'] ?? ''),
         ':text' => (string)($v['text'] ?? ''),
         ':ltext' => (string)($v['link_text'] ?? ''),
         ':miss' => json_encode(array_values((array)($v['mismatches'] ?? [])), JSON_UNESCAPED_UNICODE),
+        ':st' => $isTg ? 'needs_manual' : 'new',
+        ':note' => $isTg ? 'Тг-вакансия — контакт в посте, отклик только вручную' : '',
     ]);
     $saved += $ins->rowCount();
 }

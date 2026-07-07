@@ -27,7 +27,13 @@
     function flushL() { if (list) { html += '</ul>'; list = false; } }
     for (var i = 0; i < lines.length; i++) {
       var ln = lines[i], m = ln.match(/^\s*[-*]\s+(.*)$/);
-      if (/^\s*(-{3,}|\*{3,})\s*$/.test(ln)) { flushP(); flushL(); html += '<hr>'; }
+      if (/^\s*```/.test(ln)) {                       // ограждённый блок кода ```lang … ```
+        flushP(); flushL();
+        var code = [];
+        for (i++; i < lines.length && !/^\s*```\s*$/.test(lines[i]); i++) code.push(lines[i]);
+        html += '<pre class="md-code">' + highlightCode(code.join('\n')) + '</pre>';
+      }
+      else if (/^\s*(-{3,}|\*{3,})\s*$/.test(ln)) { flushP(); flushL(); html += '<hr>'; }
       else if (m) { flushP(); if (!list) { html += '<ul>'; list = true; } html += '<li>' + mdInline(m[1]) + '</li>'; }
       else if (!ln.trim()) { flushL(); flushP(); }
       else { flushL(); para.push(mdInline(ln)); }
@@ -306,7 +312,7 @@
   var Q_PLACEHOLDER = els.q.getAttribute('placeholder') || '';
   function clearSearch() {
     els.q.value = ''; els.clear.hidden = true;
-    if (suffMain) { suffLastPhrase = ''; suffLastQuery = ''; suffShow(); return; }
+    if (suffMain) { suffShow(); return; } // очистка ввода дерево ответов не трогает
     state.query = ''; render();
   }
 
@@ -314,12 +320,12 @@
   function onType() {
     els.clear.hidden = !els.q.value;
     if (typeTimer) clearTimeout(typeTimer);
-    if (suffMain) { // в режиме суфлёра основной инпут ищет умным поиском суфлёра (suffPick)
+    if (suffMain) { // в режиме суфлёра можно вписать вопрос руками — уйдёт тем же ИИ-ответом в дерево
       typeTimer = setTimeout(function () {
         typeTimer = null; var v = els.q.value.trim();
-        if (!v) { suffLastPhrase = ''; suffLastQuery = ''; suffShow(); }
-        else { suffLastQuery = ''; suffRender(v); }
-      }, 120);
+        if (!v) { suffShow(); return; }
+        suffAsk(v); els.q.value = ''; els.clear.hidden = true; // спросили — освобождаем поле под следующий
+      }, 700);
       return;
     }
     state.query = els.q.value;
@@ -347,31 +353,21 @@
     { key: 'jobs', icon: '🏢', label: 'Последние 3 места работы' },
     { key: 'ask',  icon: '❓', label: 'Вопросы (что спросить)' }
   ];
-  function personalSection(s) {
+  // отдельный попап на один личный блок (крупный текст), правка по карандашу в шапке
+  function openPersonal(s) {
     var p = (window.PERSONAL || {})[s.key] || { title: '', body: '' };
-    var sec = document.createElement('section'); sec.className = 'psec';
-    var head = document.createElement('div'); head.className = 'psec-head';
-    var t = document.createElement('h3'); t.className = 'psec-title'; t.textContent = s.icon + ' ' + (p.title || s.label);
-    var ed = document.createElement('button'); ed.className = 'psec-edit'; ed.type = 'button'; ed.title = 'Редактировать'; ed.setAttribute('aria-label', 'Редактировать');
-    ed.innerHTML = ICON_EDIT;
-    ed.onclick = function () { editPersonalSection(s); };
-    head.appendChild(t); head.appendChild(ed);
-    var body = document.createElement('div'); body.className = 'psec-body';
-    body.innerHTML = (p.body && p.body.trim()) ? mdBlock(p.body) : '<span class="psec-empty">пусто — нажми ✎, чтобы заполнить</span>';
-    sec.appendChild(head); sec.appendChild(body);
-    return sec;
-  }
-  function openVacancy() {
-    els.modalTitle.textContent = '📋 Текущая вакансия';
-    els.modalEdit.hidden = true;              // правка теперь по секциям
-    els.modalBody.innerHTML = '';
-    PERSONAL_SECTIONS.forEach(function (s) { els.modalBody.appendChild(personalSection(s)); });
+    els.modalTitle.textContent = s.icon + ' ' + (p.title || s.label);
+    els.modalEdit.hidden = false;
+    els.modalEdit.onclick = function () { editPersonalSection(s); };
+    els.modalBody.innerHTML = '<div class="personal-solo">' +
+      ((p.body && p.body.trim()) ? mdBlock(p.body) : '<span class="psec-empty">пусто — нажми ✎, чтобы заполнить</span>') + '</div>';
     els.modal.hidden = false;
     els.modalBody.scrollTop = 0;
   }
   function editPersonalSection(s) {
     var p = (window.PERSONAL || {})[s.key] || { title: '', body: '' };
     els.modalTitle.textContent = 'Правка: ' + s.label;
+    els.modalEdit.hidden = true;
     els.modalBody.innerHTML = '';
     var f = document.createElement('div'); f.className = 'pedit';
     f.innerHTML =
@@ -385,13 +381,18 @@
       var t = f.querySelector('.pe-title').value, b = f.querySelector('.pe-body').value;
       window.PERSONAL[s.key] = { title: t, body: b };
       api.editPersonal(s.key, { title: t, body: b }).catch(function () { alert('Не удалось сохранить'); });
-      openVacancy();
+      openPersonal(s);
     };
-    f.querySelector('.pe-cancel').onclick = function () { openVacancy(); };
+    f.querySelector('.pe-cancel').onclick = function () { openPersonal(s); };
   }
   function closeModal() { els.modal.hidden = true; }
-  var openVacancyBtn = document.getElementById('openVacancy');
-  if (openVacancyBtn) openVacancyBtn.addEventListener('click', openVacancy);
+  Array.prototype.forEach.call(document.querySelectorAll('.psec-btn'), function (b) {
+    b.addEventListener('click', function () {
+      var key = b.getAttribute('data-psec');
+      var s = PERSONAL_SECTIONS.filter(function (x) { return x.key === key; })[0];
+      if (s) openPersonal(s);
+    });
+  });
   els.modal.addEventListener('click', function (e) { if (e.target.getAttribute('data-close')) closeModal(); });
 
   // --- мониторинг вакансий: отдельная страница (роут #monitoring) ---
@@ -402,8 +403,6 @@
   var srcList = document.getElementById('src-list');
   var srcFile = document.getElementById('src-file');
   var srcUrl = document.getElementById('src-url');
-  var srcLogin = document.getElementById('src-login');
-  var srcPassword = document.getElementById('src-password');
   var fieldsTg = document.getElementById('src-fields-tg');
   var fieldsAccount = document.getElementById('src-fields-account');
   var srcKind = 'tg';
@@ -415,7 +414,7 @@
     monView.hidden = !mon;
     sideMain.hidden = mon;
     sideMon.hidden = !mon;
-    if (mon) { loadTgFiles(); loadSources(); loadVacancies(); loadAnalyzeStatus(); loadNotifications(); }
+    if (mon) { loadTgFiles(); loadSources(); loadVacancies(); loadAnalyzeStatus(); }
   }
   var backHome = document.getElementById('backHome');
   if (backHome) backHome.addEventListener('click', function (e) { e.preventDefault(); location.hash = ''; });
@@ -493,7 +492,7 @@
     if (srcKind === 'account') {
       var url = srcUrl.value.trim();
       if (!url) { srcUrl.focus(); return; }
-      payload = { kind: 'account', title: url, value: url, login: srcLogin.value.trim(), password: srcPassword.value };
+      payload = { kind: 'account', title: url, value: url };
     } else {
       var file = srcFile.value;
       if (!file) { alert('Нет доступного файла (возможно, все уже добавлены)'); return; }
@@ -501,81 +500,63 @@
     }
     api.addSource(payload).then(function (res) {
       if (res && res.existed) { alert('Такой источник уже добавлен'); return; }
-      srcUrl.value = ''; srcLogin.value = ''; srcPassword.value = '';
+      srcUrl.value = '';
       loadSources();
     }).catch(function () { alert('Не удалось добавить источник'); });
   });
   // --- найденные вакансии ---
   var vacList = document.getElementById('vac-list');
-  var vacFilter = 'new', vacSource = 'all', allVacs = [];
+  var vacFilter = 'new', allVacs = [], vacPage = 1;
+  var VAC_PAGE_SIZE = 20;
   var VAC_FILTERS = [
     { key: 'new',     label: '🆕 Новые',        match: function (v) { return v.applyStatus === 'new'; } },
     { key: 'drafts',  label: '✍️ Черновики',    match: function (v) { return v.applyStatus === 'queued' || v.applyStatus === 'approved'; } },
-    { key: 'applied', label: '✅ Откликнулся',  match: function (v) { return v.applyStatus === 'applied'; } },
-    { key: 'manual',  label: '✋ Нужна форма',  match: function (v) { return v.applyStatus === 'needs_manual'; } },
-    { key: 'skipped', label: '⏭ Пропущенные',  match: function (v) { return v.applyStatus === 'skipped'; } }
+    { key: 'manual',  label: '✋ Ручной разбор', match: function (v) { return v.applyStatus === 'needs_manual'; } },
+    { key: 'applied', label: '✅ Откликнулся',  match: function (v) { return v.applyStatus === 'applied'; } }
   ];
   function curFilter() { for (var i = 0; i < VAC_FILTERS.length; i++) if (VAC_FILTERS[i].key === vacFilter) return VAC_FILTERS[i]; return VAC_FILTERS[0]; }
   function statusMatch(v) { return curFilter().match(v); }
-  function sourceMatch(v) { return vacSource === 'all' || String(v.sourceId) === vacSource; }
-  function bothMatch(v)   { return statusMatch(v) && sourceMatch(v); }
-  // список источников, реально присутствующих в выдаче (в порядке появления)
-  function vacSources() {
-    var map = {}, order = [];
-    allVacs.forEach(function (v) {
-      var id = v.sourceId ? String(v.sourceId) : '';
-      if (!id) return;
-      if (!map[id]) { map[id] = { id: id, label: v.chat || ('источник #' + id) }; order.push(map[id]); }
-    });
-    return order;
-  }
   function loadVacancies() {
     if (!vacList) return;
     api.listVacancies().then(function (list) { allVacs = list || []; applyVacFilter(); })
       .catch(function () { vacList.innerHTML = '<div class="src-empty">Ошибка загрузки</div>'; });
   }
-  function applyVacFilter() {
-    // выбранный источник опустел под текущим статусом → вернуть на «Все»
-    if (vacSource !== 'all' && !allVacs.filter(bothMatch).length) vacSource = 'all';
-    // статус опустел под текущим источником → на первый непустой
-    if (!allVacs.filter(bothMatch).length) {
-      var fne = VAC_FILTERS.filter(function (f) { return allVacs.filter(function (v) { return f.match(v) && sourceMatch(v); }).length; })[0];
+  function sortedVacs(list) {
+    // в «Откликнулся» — последний отклик сверху; иначе как отдаёт API (score desc)
+    if (vacFilter === 'applied') {
+      list = list.slice().sort(function (a, b) {
+        return new Date(b.appliedAt || 0) - new Date(a.appliedAt || 0);
+      });
+    }
+    return list;
+  }
+  function renderVacViews() {
+    renderFilters();
+    renderVacancies(sortedVacs(allVacs.filter(statusMatch)));
+  }
+  function applyVacFilter() { // загрузка/обновление — если текущий статус пуст, перейти на первый непустой
+    if (!allVacs.filter(statusMatch).length) {
+      var fne = VAC_FILTERS.filter(function (f) { return allVacs.filter(f.match).length; })[0];
       if (fne) vacFilter = fne.key;
     }
-    renderFilters();
-    renderSourceFilter();
-    renderVacancies(allVacs.filter(bothMatch));
+    renderVacViews();
   }
-  function renderFilters() { // статус-фильтры (сайдбар); счётчики в рамках выбранного источника
+  function pickStatus(key) { // явный клик по статусу — показываем именно его, даже пустой (не перепрыгиваем)
+    vacFilter = key;
+    vacPage = 1;
+    renderVacViews();
+  }
+  function renderFilters() { // статус-фильтры (сайдбар); показываем ВСЕ статусы
     var host = document.getElementById('vac-filters'); if (!host) return;
     host.innerHTML = '';
     VAC_FILTERS.forEach(function (f) {
-      var n = allVacs.filter(function (v) { return f.match(v) && sourceMatch(v); }).length;
-      if (!n) return; // пустые статусы не показываем
+      var n = allVacs.filter(f.match).length;
       var b = document.createElement('button'); b.type = 'button';
-      b.className = 'vac-filter' + (vacFilter === f.key ? ' active' : '');
+      b.className = 'vac-filter' + (vacFilter === f.key ? ' active' : '') + (n ? '' : ' vf-empty');
       var t = document.createElement('span'); t.className = 'vf-name'; t.textContent = f.label;
       var c = document.createElement('span'); c.className = 'vf-count'; c.textContent = n;
       b.appendChild(t); b.appendChild(c);
-      b.onclick = function () { vacFilter = f.key; applyVacFilter(); };
-      host.appendChild(b);
-    });
-  }
-  function renderSourceFilter() { // фильтр по источникам (строка над списком); счётчики в рамках выбранного статуса
-    var host = document.getElementById('vac-stats'); if (!host) return;
-    host.innerHTML = '';
-    var chips = [{ id: 'all', label: 'Все' }].concat(vacSources());
-    chips.forEach(function (s) {
-      var n = s.id === 'all'
-        ? allVacs.filter(statusMatch).length
-        : allVacs.filter(function (v) { return statusMatch(v) && String(v.sourceId) === s.id; }).length;
-      if (s.id !== 'all' && !n) return; // источник без вакансий под этим статусом скрываем, «Все» всегда
-      var b = document.createElement('button'); b.type = 'button';
-      b.className = 'vac-src' + (vacSource === s.id ? ' active' : '');
-      var t = document.createElement('span'); t.className = 'vs-name'; t.textContent = s.label;
-      var c = document.createElement('span'); c.className = 'vs-count'; c.textContent = n;
-      b.appendChild(t); b.appendChild(c);
-      b.onclick = function () { vacSource = s.id; applyVacFilter(); };
+      b.onclick = function () { pickStatus(f.key); };
       host.appendChild(b);
     });
   }
@@ -583,8 +564,7 @@
     queued:       ['✍️ черновик готов', 'q'],
     approved:     ['⏳ одобрено', 'a'],
     applied:      ['✅ откликнулся', 'ok'],
-    needs_manual: ['✋ нужна форма', 'm'],
-    skipped:      ['⏭ пропущена', 's']
+    needs_manual: ['✋ ручной разбор', 'm']
   };
   function vbtn(text, cls, on) {
     var b = document.createElement('button'); b.type = 'button';
@@ -602,20 +582,45 @@
     if (v.applyStatus === 'applied' && v.appliedAt) el.title = 'откликнулся: ' + new Date(v.appliedAt).toLocaleString('ru');
     return el;
   }
+  // редактируемый блок сопроводительного письма (переиспользуется в queued и needs_manual);
+  // actionRow — строка кнопок статуса, на время правки подменяется на Сохранить/Отмена
+  function coverLetterBlock(v, actionRow) {
+    var wrap = document.createElement('div');
+    var lblRow = document.createElement('div'); lblRow.className = 'vac-apply-lbl-row';
+    var lbl = document.createElement('div'); lbl.className = 'vac-apply-lbl';
+    lbl.textContent = v.coverLetter ? '✉️ Сопроводительное (черновик)' : '✍️ письмо ещё не сформировано — черновик пустой';
+    var editBtn = document.createElement('button'); editBtn.type = 'button'; editBtn.className = 'vac-cover-edit'; editBtn.textContent = '✎ Править';
+    lblRow.appendChild(lbl); lblRow.appendChild(editBtn);
+    wrap.appendChild(lblRow);
+    var pre = document.createElement('pre'); pre.className = 'vac-cover'; pre.textContent = v.coverLetter || '';
+    pre.hidden = !v.coverLetter;
+    wrap.appendChild(pre);
+    editBtn.onclick = function () {
+      var ta = document.createElement('textarea'); ta.className = 'vac-cover-input'; ta.value = v.coverLetter || '';
+      var saveRow = document.createElement('div'); saveRow.className = 'vac-apply-btns';
+      var saveBtn = vbtn('💾 Сохранить', 'primary', function () {
+        saveBtn.disabled = true;
+        api.saveCoverLetter(v.id, ta.value).then(loadVacancies).catch(function () { alert('Не удалось сохранить'); saveBtn.disabled = false; });
+      });
+      var cancelBtn = vbtn('Отмена', '', function () { loadVacancies(); });
+      saveRow.appendChild(saveBtn); saveRow.appendChild(cancelBtn);
+      pre.replaceWith(ta);
+      actionRow.replaceWith(saveRow);
+      editBtn.hidden = true;
+      ta.focus();
+    };
+    return wrap;
+  }
   // блок под карточкой: черновик+одобрение / ручная форма / ожидание отправки
   function applyBlock(v) {
     var st = v.applyStatus;
     if (st === 'queued') {
       var box = document.createElement('div'); box.className = 'vac-apply';
-      if (v.coverLetter) {
-        var lbl = document.createElement('div'); lbl.className = 'vac-apply-lbl'; lbl.textContent = '✉️ Сопроводительное (черновик)';
-        var pre = document.createElement('pre'); pre.className = 'vac-cover'; pre.textContent = v.coverLetter;
-        box.appendChild(lbl); box.appendChild(pre);
-      }
       var row = document.createElement('div'); row.className = 'vac-apply-btns';
       row.appendChild(vbtn('✅ Одобрить отправку', 'primary', function () { api.approveApply(v.id).then(loadVacancies).catch(loadVacancies); }));
-      row.appendChild(vbtn('⏭ Пропустить', '', function () { api.skipApply(v.id).then(loadVacancies).catch(loadVacancies); }));
-      box.appendChild(row); return box;
+      box.appendChild(coverLetterBlock(v, row));
+      box.appendChild(row);
+      return box;
     }
     if (st === 'needs_manual') {
       var box2 = document.createElement('div'); box2.className = 'vac-apply need';
@@ -623,33 +628,57 @@
       box2.appendChild(n);
       var row2 = document.createElement('div'); row2.className = 'vac-apply-btns';
       row2.appendChild(vbtn('✓ Я откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
-      row2.appendChild(vbtn('⏭ Пропустить', '', function () { api.skipApply(v.id).then(loadVacancies).catch(loadVacancies); }));
-      box2.appendChild(row2); return box2;
+      box2.appendChild(coverLetterBlock(v, row2));
+      box2.appendChild(row2);
+      return box2;
     }
     if (st === 'approved') {
       var box3 = document.createElement('div'); box3.className = 'vac-apply wait';
-      box3.textContent = '⏳ Одобрено — отправлю отклик при следующем прогоне';
-      return box3;
+      var w3 = document.createElement('div'); w3.className = 'vac-apply-note'; w3.textContent = '⏳ Одобрено — отправлю отклик при следующем прогоне';
+      box3.appendChild(w3);
+      var row3 = document.createElement('div'); row3.className = 'vac-apply-btns';
+      row3.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      box3.appendChild(row3); return box3;
+    }
+    if (st === 'new') { // подходящая, ещё без отклика — дать пометить вручную (для тг отклик всегда ручной)
+      var box4 = document.createElement('div'); box4.className = 'vac-apply';
+      var row4 = document.createElement('div'); row4.className = 'vac-apply-btns';
+      row4.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      box4.appendChild(row4); return box4;
     }
     return null;
   }
-  function renderVacancies(list) {
+  function renderVacancies(fullList) {
     var cnt = document.getElementById('vac-count');
-    if (cnt) cnt.textContent = list.length ? '(' + list.length + ')' : '';
+    if (cnt) cnt.textContent = fullList.length ? '(' + fullList.length + ')' : '';
     vacList.innerHTML = '';
-    if (!list.length) {
+    if (!fullList.length) {
       vacList.innerHTML = '<div class="src-empty">Пока нет подходящих вакансий.</div>';
+      renderPager(0, 0);
       return;
     }
+    var totalPages = Math.max(1, Math.ceil(fullList.length / VAC_PAGE_SIZE));
+    if (vacPage > totalPages) vacPage = totalPages;
+    if (vacPage < 1) vacPage = 1;
+    var start = (vacPage - 1) * VAC_PAGE_SIZE;
+    var list = fullList.slice(start, start + VAC_PAGE_SIZE);
     list.forEach(function (v) {
       var card = document.createElement('article'); card.className = 'vac'; card.id = 'vac-' + v.id;
+      var isWeb = v.kind === 'account';
       var head = document.createElement('div'); head.className = 'vac-h';
       var sc = document.createElement('span'); sc.className = 'vac-score' + (v.score >= 85 ? ' hi' : ''); sc.textContent = v.score + '%';
       var tt = document.createElement('div'); tt.className = 'vac-t'; tt.textContent = v.title || '(без названия)';
+      var src = document.createElement('span'); src.className = 'vac-source'; src.textContent = (isWeb ? '🌐 ' : '📨 ') + v.chat;
       var del = document.createElement('button'); del.type = 'button'; del.className = 'src-del'; del.textContent = '✕'; del.title = 'Убрать';
       del.onclick = function () { api.deleteVacancy(v.id).then(loadVacancies).catch(loadVacancies); };
       head.appendChild(sc); head.appendChild(tt);
       var bdg = applyBadge(v); if (bdg) head.appendChild(bdg);
+      if (v.applyStatus === 'applied' && v.appliedAt) {
+        var ad = document.createElement('span'); ad.className = 'vac-applied-date';
+        ad.textContent = new Date(v.appliedAt).toLocaleDateString('ru');
+        head.appendChild(ad);
+      }
+      head.appendChild(src);
       head.appendChild(del);
       card.appendChild(head);
       if (v.reason) { var r = document.createElement('div'); r.className = 'vac-r'; r.textContent = v.reason; card.appendChild(r); }
@@ -661,10 +690,8 @@
         v.mismatches.forEach(function (t) { var li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
         mm.appendChild(ul); card.appendChild(mm);
       }
-      var isWeb = v.kind === 'account';
-      var meta = document.createElement('div'); meta.className = 'vac-m'; meta.textContent = (isWeb ? '🌐 ' : '📨 ') + v.chat;
-      if (v.link) { meta.appendChild(document.createTextNode('   ')); var a = document.createElement('a'); a.href = v.link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '🔗 открыть'; meta.appendChild(a); }
-      meta.appendChild(document.createTextNode('   '));
+      var meta = document.createElement('div'); meta.className = 'vac-m';
+      if (v.link) { var a = document.createElement('a'); a.href = v.link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '🔗 открыть'; meta.appendChild(a); meta.appendChild(document.createTextNode('   ')); }
       var find = document.createElement('a'); find.className = 'vac-find';
       find.href = v.companyUrl || companySearchUrl(v); find.target = '_blank'; find.rel = 'noopener';
       find.textContent = v.companyUrl ? '🏢 сайт компании' : '🔎 искать компанию';
@@ -689,55 +716,33 @@
       var ab = applyBlock(v); if (ab) card.appendChild(ab);
       vacList.appendChild(card);
     });
+    renderPager(vacPage, totalPages);
+  }
+  function renderPager(page, totalPages) {
+    var host = document.getElementById('vac-pager'); if (!host) return;
+    host.innerHTML = '';
+    if (totalPages <= 1) return;
+    function pbtn(label, targetPage, disabled, active) {
+      var b = document.createElement('button'); b.type = 'button';
+      b.className = 'pager-btn' + (active ? ' active' : '');
+      b.textContent = label; b.disabled = !!disabled;
+      b.onclick = function () { vacPage = targetPage; renderVacViews(); vacList.scrollIntoView({ block: 'start' }); };
+      return b;
+    }
+    host.appendChild(pbtn('‹ Назад', page - 1, page <= 1, false));
+    // окно страниц вокруг текущей (максимум 7 кнопок с номерами)
+    var from = Math.max(1, page - 3), to = Math.min(totalPages, from + 6);
+    from = Math.max(1, to - 6);
+    if (from > 1) { host.appendChild(pbtn('1', 1, false, page === 1)); if (from > 2) { var d1 = document.createElement('span'); d1.className = 'pager-dots'; d1.textContent = '…'; host.appendChild(d1); } }
+    for (var i = from; i <= to; i++) host.appendChild(pbtn(String(i), i, false, i === page));
+    if (to < totalPages) { if (to < totalPages - 1) { var d2 = document.createElement('span'); d2.className = 'pager-dots'; d2.textContent = '…'; host.appendChild(d2); } host.appendChild(pbtn(String(totalPages), totalPages, false, page === totalPages)); }
+    host.appendChild(pbtn('Вперёд ›', page + 1, page >= totalPages, false));
   }
   function loadAnalyzeStatus() {
     var el = document.getElementById('analyze-status'); if (!el) return;
     api.analyzeStatus().then(function (s) {
       el.textContent = (s && s.last && s.last.at) ? 'последний прогон: ' + new Date(s.last.at).toLocaleString('ru') : '';
     }).catch(function () {});
-  }
-  // --- колокольчик уведомлений ---
-  var bellBtn = document.getElementById('bell');
-  var bellPanel = document.getElementById('bell-panel');
-  var bellCount = document.getElementById('bell-count');
-  function loadNotifications() {
-    if (!bellBtn) return;
-    api.notifications().then(renderNotifications).catch(function () {});
-  }
-  function renderNotifications(data) {
-    var n = (data && data.unread) || 0;
-    if (bellCount) { bellCount.textContent = n; bellCount.hidden = n === 0; }
-    bellBtn.classList.toggle('has-unread', n > 0);
-    if (!bellPanel) return;
-    var items = (data && data.items) || [];
-    bellPanel.innerHTML = '';
-    var head = document.createElement('div'); head.className = 'bell-head';
-    var ttl = document.createElement('span'); ttl.textContent = 'Уведомления'; head.appendChild(ttl);
-    if (items.length) {
-      var clr = document.createElement('button'); clr.type = 'button'; clr.className = 'bell-clear'; clr.textContent = 'прочитать все';
-      clr.onclick = function () { api.markNotifRead().then(loadNotifications).catch(loadNotifications); };
-      head.appendChild(clr);
-    }
-    bellPanel.appendChild(head);
-    if (!items.length) { var e = document.createElement('div'); e.className = 'bell-empty'; e.textContent = 'Пусто'; bellPanel.appendChild(e); return; }
-    items.forEach(function (it) {
-      var row = document.createElement('div'); row.className = 'bell-item' + (it.read ? ' read' : '');
-      var t = document.createElement('div'); t.className = 'bell-item-t'; t.textContent = it.title || '(без названия)';
-      var b = document.createElement('div'); b.className = 'bell-item-b'; b.textContent = it.body || '';
-      row.appendChild(t); row.appendChild(b);
-      row.onclick = function () {
-        api.markNotifRead(it.id).then(loadNotifications).catch(loadNotifications);
-        if (it.vacancyId) { var c = document.getElementById('vac-' + it.vacancyId); if (c) c.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-        bellPanel.hidden = true;
-      };
-      bellPanel.appendChild(row);
-    });
-  }
-  if (bellBtn) {
-    bellBtn.addEventListener('click', function (e) { e.stopPropagation(); bellPanel.hidden = !bellPanel.hidden; });
-    document.addEventListener('click', function (e) {
-      if (bellPanel && !bellPanel.hidden && !bellPanel.contains(e.target) && e.target !== bellBtn) bellPanel.hidden = true;
-    });
   }
 
   // ================= 🎧 Суфлёр: звук вкладки → распознавание → ответы из базы =================
@@ -746,13 +751,20 @@
     bar: document.getElementById('suff-bar'),
     status: document.getElementById('suff-status'),
     trans: document.getElementById('suff-transcript'),
-    ptt: document.getElementById('suff-ptt')
+    pause: document.getElementById('suff-pause'),
+    reset: document.getElementById('suff-reset'),
+    video: document.getElementById('suff-video'),
+    videoWrap: document.getElementById('suff-video-wrap')
   };
-  var suffMain = false, suffLastPhrase = '';
-  var SUFF_N = 4;
+  var suffMain = false, suffPaused = false;
+  var suffThreads = [];             // темы по порядку (текущая — последняя, снизу); ответы копятся, ничего не пропадает
+  var suffLastAskedNorm = '';       // норм. текст последнего вопроса — чтобы не переспрашивать то же
+  var suffAskBuf = '';              // накопитель распознанной речи до ближайшего вопроса
   // стоп-слова + разговорный мусор — чтобы из вопроса вытащить только смысловые термины
   var SUFF_STOP = {};
-  ('и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по ее мне было вот от меня о из ему когда даже ну ли если уже или ни быть был него до вас уж вам ведь там потом себя ничего ей может они тут где есть надо ней для мы тебя их чем была сам чтоб без чего раз тоже себе под будет тогда кто этот того потому этого какой ним здесь этом один мой тем чтобы нее сейчас были куда зачем всех можно при два об другой хоть после над больше тот через эти нас про всего них какая много три эту моя этой перед лучше чуть том такой им более всегда всю между это твой ваш какие каких нам вообще нужно тебе есть расскажи расскажите опиши опишите объясни объясните скажи давай давайте вопрос например пожалуйста знаешь понимаешь значит типа вот такой так вот')
+  ('и в во не что он на я с со как а то все она так его но да ты к у же вы за бы по ее мне было вот от меня о из ему когда даже ну ли если уже или ни быть был него до вас уж вам ведь там потом себя ничего ей может они тут где есть надо ней для мы тебя их чем была сам чтоб без чего раз тоже себе под будет тогда кто этот того потому этого какой ним здесь этом один мой тем чтобы нее сейчас были куда зачем всех можно при два об другой хоть после над больше тот через эти нас про всего них какая много три эту моя этой перед лучше чуть том такой им более всегда всю между это твой ваш какие каких нам вообще нужно тебе есть расскажи расскажите опиши опишите объясни объясните скажи давай давайте вопрос например пожалуйста знаешь понимаешь значит типа вот такой так вот ' +
+   // каркас вопросов — не смысл, чтобы «что такое X» и «что такое Y» не склеивались в одну тему
+   'такое такие таких такого простыми простым простой словами слово слова пример примеры примером разница разницу отличие отличия отличается работает работают работать означает называется называют нужен нужна кстати короче именно скажем допустим представь смотри слушай окей понятно значить почему отчего каким какову')
     .split(/\s+/).forEach(function (w) { SUFF_STOP[w] = 1; });
 
   // словарь концептов: как бы собеседник/распознавалка ни сказали термин (аббревиатура, полная фраза,
@@ -841,89 +853,165 @@
     { hit: ['react', 'реакт', 'jsx', 'джиэсэкс', 'хук', ' hook', 'usestate', 'useeffect', 'usememo', 'usecallback', 'виртуальн дом', 'virtual dom', 'реконсиляц', 'reconciliation', 'ререндер', 'ре-рендер'], cat: 'react', add: ['react'] }
   ];
 
-  // по фразе собеседника — карточки. Логика: концепты (буст категории) + оверлап по ключевым словам.
-  function suffPick(phrase) {
+  // концепты + смысловые слова фразы — по ним решаем, продолжение это темы или новый вопрос
+  function suffTopicSig(phrase) {
     var np = engine.norm(' ' + phrase + ' ');
-    var words = engine.terms(phrase).filter(function (w) { return w.length >= 2 && !SUFF_STOP[w]; });
-    var boostCats = {}, extra = {};
+    var words = engine.terms(phrase).filter(function (w) { return w.length >= 3 && !SUFF_STOP[w]; });
+    var cats = {};
     SUFF_CONCEPTS.forEach(function (c) {
-      if (c.hit.some(function (h) { return np.indexOf(h) !== -1; })) {
-        boostCats[c.cat] = 1;
-        c.add.forEach(function (t) { extra[t] = 1; });
-      }
+      if (c.hit.some(function (h) { return np.indexOf(h) !== -1; })) cats[c.cat] = 1;
     });
-    var termSet = {};
-    words.forEach(function (w) { termSet[w] = 1; });
-    Object.keys(extra).forEach(function (t) { termSet[t] = 1; });
-    var searchTerms = Object.keys(termSet);
-    if (!searchTerms.length && !Object.keys(boostCats).length) return { words: [], cards: [] };
+    return { words: words, cats: Object.keys(cats) };
+  }
+  // маркеры уточнения — «а если…», «почему…», «то есть…» и т.п.
+  var SUFF_FOLLOW = ['а ', 'а,', 'то есть', 'почему', 'зачем', 'уточни', 'поясни', 'разверни', 'подробн', 'например', 'а если', 'а что', 'а как', 'а когда', 'а в чём', 'а в чем', 'и ещё', 'и еще'];
+  function suffIsClarifier(phrase) {
+    var low = (phrase || '').trim().toLowerCase();
+    return SUFF_FOLLOW.some(function (m) { return low.indexOf(m) === 0; });
+  }
+  // та же тема? — общий концепт / общее смысловое слово (или его словоформа) / короткое уточнение по горячим следам
+  function suffSameTopic(sig, phrase, topic, now) {
+    if (now - topic.lastAt > 90000) return false;            // >1.5 мин тишины — считаем новой темой
+    if (sig.cats.some(function (c) { return topic.cats[c]; })) return true;
+    var wordHit = sig.words.some(function (w) {
+      if (topic.words[w]) return true;                       // точное совпадение термина
+      if (w.length < 5) return false;
+      var pre = w.slice(0, 5);                               // совпадение по префиксу — ловит словоформы (индекс/индексы)
+      return Object.keys(topic.words).some(function (k) { return k.length >= 5 && k.slice(0, 5) === pre; });
+    });
+    if (wordHit) return true;
+    if (suffIsClarifier(phrase) && sig.words.length <= 3 && now - topic.lastAt < 50000) return true;
+    return false;
+  }
+  function suffMergeSig(topic, sig) {
+    sig.words.forEach(function (w) { topic.words[w] = 1; });
+    sig.cats.forEach(function (c) { topic.cats[c] = 1; });
+  }
+  function suffShort(s) { s = (s || '').trim(); return s.length > 90 ? s.slice(0, 88) + '…' : s; }
 
-    var tally = {};
-    searchTerms.forEach(function (w) {
-      engine.run(w, '*').slice(0, 30).forEach(function (it, rank) {
-        var e = tally[it.id] || (tally[it.id] = { it: it, hits: 0, rankSum: 0, boost: 0 });
-        e.hits += 1; e.rankSum += rank;
-      });
-    });
-    // буст карточек названной категории — её топовые (по весу) всплывут, даже если слово не совпало дословно
-    Object.keys(boostCats).forEach(function (cat) {
-      (SOBES._items || []).forEach(function (it) {
-        if (it.cat !== cat) return;
-        var e = tally[it.id] || (tally[it.id] = { it: it, hits: 0, rankSum: 60, boost: 0 });
-        e.boost += 1;
-      });
-    });
-    var arr = []; for (var k in tally) arr.push(tally[k]);
-    arr.sort(function (a, b) {
-      var sa = a.hits + a.boost * 1.5, sb = b.hits + b.boost * 1.5; // слово-совпадения + буст категории
-      if (sb !== sa) return sb - sa;
-      if (a.rankSum !== b.rankSum) return a.rankSum - b.rankSum;
-      return (b.it.weight || 0) - (a.it.weight || 0);
-    });
-    // дедуп по тексту вопроса — один и тот же вопрос из разных категорий не дублируем
-    var seenQ = {}, cards = [];
-    for (var i = 0; i < arr.length && cards.length < SUFF_N; i++) {
-      var qn = engine.norm(arr[i].it.q);
-      if (seenQ[qn]) continue;
-      seenQ[qn] = 1; cards.push(arr[i].it);
-    }
-    return { words: searchTerms, cards: cards };
+  // мутация #results без дёрганья: если читаешь НЕ у самого верха — компенсируем сдвиг высоты,
+  // чтобы твой ответ остался на месте; если ты вверху — показываем новый (свежий сверху)
+  function suffMutate(fn) {
+    var e = els.results;
+    var atTop = e.scrollTop <= 40;
+    var oldH = e.scrollHeight;
+    fn();
+    if (!atTop) e.scrollTop += (e.scrollHeight - oldH);
   }
 
-  var suffLastQuery = '';
-  // рисует текущие подсказки суфлёра прямо в главный #results (вместо закреплённых)
+  // создать новую тему-ветку СВЕРХУ (свежий ответ — вверху списка)
+  function suffCreateTopic(phrase, sig, now) {
+    var t = { words: {}, cats: {}, lastAt: now, el: null, answersEl: null, qa: [] };
+    suffMergeSig(t, sig);
+    var el = document.createElement('div'); el.className = 'suff-topic';
+    var head = document.createElement('div'); head.className = 'suff-topic-head';
+    head.textContent = '🧵 ' + suffShort(phrase);
+    var ans = document.createElement('div'); ans.className = 'suff-topic-answers';
+    el.appendChild(head); el.appendChild(ans);
+    t.el = el; t.answersEl = ans;
+    if (!suffThreads.length) { els.results.innerHTML = ''; cardEls = []; state.sel = -1; } // убрать плейсхолдер
+    suffMutate(function () { els.results.insertBefore(el, els.results.firstChild); });
+    suffThreads.unshift(t);
+    return t;
+  }
+  // вернуть тему для фразы: продолжение текущей (верхней) или новая
+  function suffRouteTopic(phrase, sig) {
+    var now = Date.now();
+    var cur = suffThreads[0];
+    if (cur && suffSameTopic(sig, phrase, cur, now)) { cur.lastAt = now; suffMergeSig(cur, sig); return cur; }
+    return suffCreateTopic(phrase, sig, now);
+  }
+  // добавить в тему блок «вопрос + место под ответ», вернуть запись (rec.aEl — узел ответа)
+  function suffAddQA(topic, phrase) {
+    var qa = document.createElement('div');
+    qa.className = 'suff-qa' + (topic.answersEl.children.length ? ' suff-followup' : '');
+    var q = document.createElement('div'); q.className = 'suff-qa-q'; q.textContent = '🎧 ' + phrase;
+    var a = document.createElement('div'); a.className = 'suff-qa-a suff-ai-body';
+    a.innerHTML = '<span class="suff-ai-wait">🤖 думаю…</span>';
+    qa.appendChild(q); qa.appendChild(a);
+    suffMutate(function () { topic.answersEl.appendChild(qa); });   // уточнение — под основным ответом темы
+    var rec = { q: phrase, aEl: a, ans: '' };
+    (topic.qa = topic.qa || []).push(rec);
+    return rec;
+  }
+  // разбить ответ на суть (до первой пустой строки) и остальное (детали/пример → под «подробнее»)
+  function suffSplitAnswer(text) {
+    var t = (text || '').trim();
+    var i = t.indexOf('\n\n');
+    if (i === -1) return { main: t, more: '' };
+    return { main: t.slice(0, i).trim(), more: t.slice(i + 2).trim() };
+  }
+  function suffMoreBlock(text) {
+    var wrap = document.createElement('div'); wrap.className = 'suff-more';
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'suff-more-btn'; btn.textContent = 'Подробнее ▾';
+    var c = document.createElement('div'); c.className = 'suff-more-body suff-ai-body'; c.hidden = true; c.innerHTML = mdBlock(text);
+    btn.onclick = function () { c.hidden = !c.hidden; btn.textContent = c.hidden ? 'Подробнее ▾' : 'Свернуть ▴'; };
+    wrap.appendChild(btn); wrap.appendChild(c);
+    return wrap;
+  }
+  // история темы (завершённые пары вопрос-ответ) → контекст для уточнений
+  function suffTopicHistory(topic) {
+    var h = [];
+    (topic.qa || []).slice(-3).forEach(function (it) {
+      var a = (it.ans || '').trim();
+      if (it.q && a && a.length > 8) h.push({ q: it.q, a: a });
+    });
+    return h;
+  }
+  // подсказки суфлёра — накопленное дерево в #results (ничего не затираем, если ветки уже есть)
   function suffShow() {
     els.empty.hidden = true;
-    els.results.innerHTML = ''; cardEls = []; state.sel = -1;
-    if (!suffLastPhrase) {
+    if (!suffThreads.length) {
       els.counter.textContent = '🎧 Суфлёр слушает…';
-      els.results.innerHTML = '<div class="suff-hint">жду вопрос собеседника — или впиши его в поиск сверху</div>';
-      return;
+      els.results.innerHTML = '<div class="suff-hint">жду вопрос собеседника — ответы копятся здесь и не пропадают</div>';
+      cardEls = []; state.sel = -1;
+    } else {
+      els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length;
     }
-    var r = suffPick(suffLastPhrase);
-    if (!r.cards.length) {
-      els.counter.textContent = '🎧 Суфлёр';
-      els.results.innerHTML = '<div class="suff-hint">по этому вопросу карточек не нашлось</div>';
-      return;
-    }
-    els.counter.textContent = '🎧 подсказок: ' + r.cards.length;
-    var frag = document.createDocumentFragment();
-    r.cards.forEach(function (it) { var el = makeCard(it, r.words, true); cardEls.push(el); frag.appendChild(el); });
-    els.results.appendChild(frag);
-    if (cardEls[0] && cardEls[0]._more) openDetail(cardEls[0]); // сразу раскрыть верхнюю
-    els.results.scrollTop = 0;
-  }
-  function suffRender(phrase) {
-    var p = (phrase || '').trim();
-    if (!p || p === suffLastQuery) return;
-    suffLastQuery = p; suffLastPhrase = p;
-    if (suffMain && !state.query) suffShow(); // при активном поиске суфлёр не перебивает выдачу
   }
 
-  var suffTimer = null;
-  function suffSchedule(phrase) {
-    if (suffTimer) clearTimeout(suffTimer);
-    suffTimer = setTimeout(function () { suffTimer = null; suffRender(phrase); }, 350);
+  // ---- AI-суфлёр: вопрос собеседника → ответ Claude (без карточек, ИИ формирует сам) ----
+  function suffAsk(phrase) {
+    var p = (phrase || '').replace(/\s+/g, ' ').trim();
+    if (!suffMain || p.length < 6) return;
+    var pn = engine.norm(p);
+    if (!pn || pn === suffLastAskedNorm) return;   // не переспрашиваем то же
+    suffLastAskedNorm = pn;
+    var sig = suffTopicSig(p);
+    var topic = suffRouteTopic(p, sig);
+    var history = suffTopicHistory(topic);         // контекст темы собираем ДО добавления текущего вопроса
+    var rec = suffAddQA(topic, p);
+    var body = rec.aEl;
+    els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length;
+    var acc = '';
+    api.askStream(p, [], function (chunk) {        // [] карточек — отвечает сам ИИ; history — контекст уточнений
+      if (!body.isConnected) return;
+      acc += chunk;
+      suffMutate(function () { body.textContent = suffSplitAnswer(acc).main; });   // пока стримится — только суть
+    }, history).then(function () {
+      if (!body.isConnected) return;
+      rec.ans = acc;
+      var parts = suffSplitAnswer(acc);
+      suffMutate(function () {
+        body.innerHTML = parts.main ? mdBlock(parts.main) : (acc ? mdBlock(acc) : '<span class="suff-ai-err">пустой ответ</span>');
+        if (parts.more) body.appendChild(suffMoreBlock(parts.more));  // детали/пример — под «подробнее»
+      });
+    }).catch(function (e) {
+      if (!body.isConnected) return;
+      body.innerHTML = (acc ? mdBlock(suffSplitAnswer(acc).main) + '<br>' : '') + '<span class="suff-ai-err">обрыв (' + escHtml(String((e && e.message) || e)) + ')</span>';
+    });
+  }
+
+  // накапливаем распознанную речь и спрашиваем ИИ, когда фраза «устоялась» (пауза)
+  var suffAskTimer = null;
+  function suffAskSchedule() {
+    if (suffAskTimer) clearTimeout(suffAskTimer);
+    suffAskTimer = setTimeout(function () {
+      suffAskTimer = null;
+      var phrase = suffAskBuf.replace(/\s+/g, ' ').trim();
+      suffAskBuf = '';
+      suffAsk(phrase);
+    }, 1200);
   }
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -940,33 +1028,66 @@
     suffRec = new SR();
     suffRec.lang = 'ru-RU'; suffRec.continuous = true; suffRec.interimResults = true;
     suffRec.onresult = function (e) {
-      var interim = '';
+      var interim = '', fin = '';
       for (var i = e.resultIndex; i < e.results.length; i++) {
         var res = e.results[i];
-        if (res.isFinal) { suffFinal += res[0].transcript + ' '; suffSchedule(res[0].transcript); }
-        else interim += res[0].transcript;
+        if (res.isFinal) fin += res[0].transcript + ' '; else interim += res[0].transcript;
       }
+      if (fin) { suffFinal += fin; suffAskBuf += fin; suffAskSchedule(); } // финал → в накопитель + дебаунс вопроса
       suffShowTrans(interim);
-      if (interim) suffSchedule(interim);
     };
     suffRec.onerror = function (e) {
       if (e.error === 'no-speech' || e.error === 'aborted') return;
       suffSetStatus('ошибка распознавания: ' + e.error, 'err');
     };
-    suffRec.onend = function () { if (suffOn && !suffPttOn) { try { suffRec.start(suffTrack); } catch (err) {} } }; // авто-рестарт
+    suffRec.onend = function () { if (suffOn && !suffPaused) { try { suffRec.start(suffTrack); } catch (err) {} } }; // авто-рестарт (не на паузе)
     try { suffRec.start(suffTrack); }
     catch (err) { suffSetStatus('этот Chrome не подаёт звук вкладки в распознавание (нужен Chrome 135+)', 'err'); }
   }
 
-  function suffCaptureStop() { // остановить только аудио-захват, режим суфлёра не трогаем
+  function suffHideVideo() {
+    if (suff.video) { try { suff.video.pause(); } catch (e) {} suff.video.srcObject = null; }
+    if (suff.videoWrap) suff.videoWrap.hidden = true;
+  }
+  function suffCaptureStop() { // остановить только захват (аудио+видео), режим суфлёра не трогаем
     suffOn = false;
     if (suffRec) { try { suffRec.stop(); } catch (e) {} suffRec = null; }
     if (suffStream) { suffStream.getTracks().forEach(function (t) { t.stop(); }); suffStream = null; }
     suffTrack = null;
+    suffHideVideo();
+  }
+  // ---- пауза: перестать слушать, но остаться в режиме (звук/видео вкладки живы, продолжить мгновенно) ----
+  function suffUpdatePauseBtn() {
+    if (!suff.pause) return;
+    suff.pause.textContent = suffPaused ? '▶ продолжить' : '⏸ пауза';
+    suff.pause.classList.toggle('paused', suffPaused);
+  }
+  function suffPauseToggle() {
+    if (!suffMain) return;
+    if (suffPaused) {                       // продолжить
+      suffPaused = false; suffUpdatePauseBtn();
+      if (suffTrack) { suffStartRec(); suffSetStatus('слушаю собеседника…', 'live'); }
+      else suffCapture();
+    } else {                                // пауза
+      suffPaused = true; suffUpdatePauseBtn();
+      if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
+      suffAskBuf = '';
+      if (suffRec) { suffRec.onend = null; try { suffRec.stop(); } catch (e) {} suffRec = null; }
+      suffSetStatus('пауза — не слушаю');
+    }
+  }
+  // сброс: очистить все ответы и контекст тем, НЕ выключая суфлёр (жать между вопросами)
+  function suffReset() {
+    if (!suffMain) return;
+    if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
+    suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
+    suffShow();   // тем нет → плейсхолдер, чистый экран под новый вопрос
   }
   function suffStop() { // полностью выйти из режима суфлёра
     suffCaptureStop();
-    suffMain = false;
+    suffMain = false; suffPaused = false; suffUpdatePauseBtn();
+    if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
+    suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
     if (suff.toggle) suff.toggle.classList.remove('on');
     if (suff.bar) suff.bar.hidden = true;
     els.q.value = ''; state.query = ''; els.clear.hidden = true;
@@ -976,12 +1097,12 @@
   }
 
   function suffEnter() { // включить режим суфлёра на главной, затем попытаться подключить живой звук
-    suffMain = true;
+    suffMain = true; suffPaused = false; suffUpdatePauseBtn();
     if (suff.toggle) suff.toggle.classList.add('on');
     if (suff.bar) suff.bar.hidden = false;
     els.q.value = ''; state.query = ''; els.clear.hidden = true;
     els.q.setAttribute('placeholder', '🎧 вопрос собеседника — или впиши сам…');
-    suffLastQuery = ''; suffLastPhrase = '';
+    suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
     suffShow();
     suffCapture();
   }
@@ -992,8 +1113,12 @@
       if (!suffMain) { stream.getTracks().forEach(function (t) { t.stop(); }); return; } // успели выключить
       var au = stream.getAudioTracks();
       if (!au.length) { stream.getTracks().forEach(function (t) { t.stop(); }); suffSetStatus('звук вкладки не выбран — можно вписать вручную', 'err'); return; }
-      stream.getVideoTracks().forEach(function (t) { t.stop(); }); // видео не нужно
       suffStream = stream; suffTrack = au[0]; suffOn = true;
+      // видео вкладки показываем справа (звук у элемента заглушен — без эха; распознавание берёт аудио-трек напрямую)
+      if (stream.getVideoTracks().length && suff.video) {
+        suff.video.srcObject = stream;
+        if (suff.videoWrap) suff.videoWrap.hidden = false;
+      }
       suffTrack.onended = function () { suffCaptureStop(); suffSetStatus('захват остановлен — впиши вручную'); };
       suffSetStatus('слушаю собеседника…', 'live');
       suffStartRec();
@@ -1002,60 +1127,9 @@
     });
   }
 
-  // ---- push-to-talk: зажать кнопку и сказать СВОИМ голосом (микрофон), что искать ----
-  var suffPttRec = null, suffPttOn = false;
-  function suffPttMic() {
-    if (!suffPttOn || suffPttRec) return;
-    suffPttRec = new SR();
-    suffPttRec.lang = 'ru-RU'; suffPttRec.continuous = true; suffPttRec.interimResults = true;
-    suffPttRec.onresult = function (e) {
-      var interim = '', fin = '';
-      for (var i = e.resultIndex; i < e.results.length; i++) {
-        var res = e.results[i];
-        if (res.isFinal) fin += res[0].transcript + ' '; else interim += res[0].transcript;
-      }
-      if (fin) { suffFinal += fin; suffSchedule(fin); }
-      if (interim) suffSchedule(interim);
-      if (suff.trans) suff.trans.innerHTML = '🎤 ' + escHtml((suffFinal + interim).slice(-400));
-    };
-    suffPttRec.onerror = function (e) {
-      if (e.error === 'no-speech' || e.error === 'aborted') return;
-      if (suff.trans) suff.trans.innerHTML = '<i class="suff-interim">микрофон: ' + escHtml(e.error) + '</i>';
-    };
-    suffPttRec.onend = function () { if (suffPttOn) { try { suffPttRec.start(); } catch (e) {} } }; // держим живым, пока зажато
-    try { suffPttRec.start(); } catch (err) { setTimeout(function () { if (suffPttOn) { try { suffPttRec.start(); } catch (e) {} } }, 200); }
-  }
-  function suffPttStart() {
-    if (!SR || suffPttOn) return;
-    suffPttOn = true;
-    if (suff.ptt) suff.ptt.classList.add('rec'); // ТОЛЬКО подсветка — статус/текст не трогаем, ничего не съезжает
-    suffFinal = '';
-    if (suff.trans) suff.trans.innerHTML = '<i class="suff-interim">🎤 говорите…</i>';
-    if (suffRec) { // корректно закрыть распознавание собеседника, затем стартовать микрофон (чтобы движок не конфликтовал)
-      var prev = suffRec; suffRec = null;
-      prev.onend = function () { suffPttMic(); };
-      try { prev.stop(); } catch (e) { suffPttMic(); }
-      setTimeout(function () { suffPttMic(); }, 250); // страховка, если onend не пришёл (задвоить не даст guard)
-    } else {
-      suffPttMic();
-    }
-  }
-  function suffPttStop() {
-    if (!suffPttOn) return;
-    suffPttOn = false;
-    if (suff.ptt) suff.ptt.classList.remove('rec');
-    if (suffPttRec) { suffPttRec.onend = null; try { suffPttRec.stop(); } catch (e) {} suffPttRec = null; }
-    if (suffOn && suffTrack) suffStartRec(); // вернуть распознавание собеседника
-  }
-  if (suff.ptt) {
-    suff.ptt.addEventListener('pointerdown', function (e) { e.preventDefault(); try { suff.ptt.setPointerCapture(e.pointerId); } catch (err) {} suffPttStart(); });
-    suff.ptt.addEventListener('pointerup', function () { suffPttStop(); });
-    suff.ptt.addEventListener('pointercancel', function () { suffPttStop(); });
-    suff.ptt.addEventListener('lostpointercapture', function () { suffPttStop(); });
-    suff.ptt.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  }
-
   if (suff.toggle) suff.toggle.addEventListener('click', function () { if (suffMain) suffStop(); else suffEnter(); });
+  if (suff.pause) suff.pause.addEventListener('click', suffPauseToggle);
+  if (suff.reset) suff.reset.addEventListener('click', suffReset);
 
   window.addEventListener('hashchange', route);
 

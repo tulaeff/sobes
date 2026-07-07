@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0d10">
   <title>Шпаргалка PHP · собес</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c6cff'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'%3E%3C?%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=56">
+  <link rel="stylesheet" href="/styles.css?v=83">
 </head>
 <body>
   <div id="app">
@@ -21,7 +21,11 @@
       </div>
       <div id="sidebar-main">
         <div class="personal">
-          <button id="openVacancy" class="pbtn" type="button">📋 Текущая вакансия</button>
+          <div class="personal-head">📋 Текущая вакансия</div>
+          <button class="pbtn psec-btn" data-psec="self" type="button">👤 О себе</button>
+          <button class="pbtn psec-btn" data-psec="task" type="button">💡 Сложная задача</button>
+          <button class="pbtn psec-btn" data-psec="jobs" type="button">🏢 Места работы</button>
+          <button class="pbtn psec-btn" data-psec="ask" type="button">❓ Вопросы к ним</button>
         </div>
         <div class="tools">
           <a id="openSources" class="pbtn tool" href="#monitoring">📡 Мониторинг вакансий</a>
@@ -57,13 +61,20 @@
 
         <div id="suff-bar" class="suff-bar" hidden>
           <span id="suff-status" class="suff-status">готов</span>
-          <button id="suff-ptt" class="suff-ptt" type="button" title="Зажми и скажи своим голосом, что искать (когда собеседник сказал невнятно)">🎤 зажми — скажи</button>
-          <span class="suff-hintline">вопрос ловится по речи собеседника или впиши его в поиск ↑</span>
+          <button id="suff-pause" class="suff-pause" type="button" title="Пауза — перестать слушать (потом продолжить)">⏸ пауза</button>
+          <button id="suff-reset" class="suff-reset" type="button" title="Сбросить — очистить все ответы и контекст (суфлёр не выключается)">🗑 сброс</button>
+          <span class="suff-hintline">ответы копятся по темам и не пропадают · вопрос ловится по речи собеседника или впиши его в поиск ↑</span>
           <div id="suff-transcript" class="suff-transcript" aria-live="polite"></div>
         </div>
 
         <div id="counter" class="counter"></div>
-        <section id="results" class="results"></section>
+        <div id="suff-split" class="suff-split">
+          <section id="results" class="results"></section>
+          <aside id="suff-video-wrap" class="suff-video-wrap" hidden>
+            <div class="suff-video-lbl">📺 отслеживаемая вкладка</div>
+            <video id="suff-video" class="suff-video" autoplay muted playsinline></video>
+          </aside>
+        </div>
         <div id="empty" class="empty" hidden>
           <b>Ничего не нашлось</b>
         </div>
@@ -73,10 +84,6 @@
         <div class="mon-inner">
           <div class="mon-top">
             <h1>📡 Мониторинг вакансий</h1>
-            <div class="bell-wrap">
-              <button id="bell" type="button" class="bell" title="Уведомления">🔔<span id="bell-count" class="bell-count" hidden>0</span></button>
-              <div id="bell-panel" class="bell-panel" hidden></div>
-            </div>
           </div>
           <div class="src-add">
             <div class="src-tabs">
@@ -89,8 +96,6 @@
               </div>
               <div id="src-fields-account" class="src-fields" hidden>
                 <input id="src-url" type="text" placeholder="URL (https://hh.ru/… или https://career.habr.com/…)">
-                <input id="src-login" type="text" autocomplete="off" placeholder="Логин / email">
-                <input id="src-password" type="password" autocomplete="new-password" placeholder="Пароль">
               </div>
               <button id="src-add-btn" type="button" class="btn primary">Добавить</button>
             </div>
@@ -102,8 +107,8 @@
               <span id="analyze-status" class="analyze-status"></span>
             </div>
           </div>
-          <div id="vac-stats" class="vac-stats"></div>
           <div id="vac-list" class="vac-list"></div>
+          <div id="vac-pager" class="vac-pager"></div>
         </div>
       </section>
 
@@ -120,8 +125,8 @@
     </div>
   </div>
 
-  <script src="/api.js?v=56"></script>
-  <script src="/search.js?v=56"></script>
-  <script src="/app.js?v=56"></script>
+  <script src="/api.js?v=83"></script>
+  <script src="/search.js?v=83"></script>
+  <script src="/app.js?v=83"></script>
 </body>
 </html>

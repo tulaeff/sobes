@@ -4,6 +4,8 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 
 const CACHE_KEY = 'sobes:cards';
+// модель AI-суфлёра. Быстрая/дешёвая — haiku (для живого суфлёра). Умнее/медленнее: claude-sonnet-5, claude-opus-4-8.
+const ASK_MODEL = 'claude-haiku-4-5';
 
 // ---------- подключения ----------
 function db(): PDO {
@@ -44,6 +46,22 @@ function cacheSet(string $json): void {
 }
 function cacheBust(): void {
     try { $r = redis(); if ($r) $r->del(CACHE_KEY); } catch (Throwable $e) {}
+}
+
+// Ключ Anthropic: из env-переменной контейнера или из примонтированного секрет-файла (вне репозитория)
+function anthropicKey(): ?string {
+    $k = getenv('ANTHROPIC_API_KEY');
+    if ($k) return trim($k);
+    $f = '/var/www/secret.env';
+    $found = null;
+    if (is_file($f)) {
+        foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
+            if (preg_match('/^\s*ANTHROPIC_API_KEY\s*=\s*(.+)$/', $line, $m)) {
+                $found = trim($m[1], " \t\"'"); // последняя строка выигрывает (свежедописанный ключ)
+            }
+        }
+    }
+    return $found;
 }
 
 // ---------- сборка полезной нагрузки ----------
@@ -110,6 +128,100 @@ try {
         exit;
     }
 
+    // POST /ask — AI-суфлёр: вопрос собеседника + релевантные карточки (RAG) → ответ Claude
+    if ($method === 'POST' && $path === '/ask') {
+        $b = body();
+        $question = trim((string)($b['question'] ?? ''));
+        if ($question === '') fail('пустой вопрос');
+        $key = anthropicKey();
+        if (!$key) fail('нет ANTHROPIC_API_KEY (положи в ~/.config/sobes/env и пересоздай стек)', 500);
+
+        // контекст из присланных фронтом релевантных карточек (заземление, чтобы не выдумывал)
+        $ctx = '';
+        foreach (array_slice($b['cards'] ?? [], 0, 5) as $c) {
+            if (!is_array($c)) continue;
+            $ctx .= '### ' . trim((string)($c['q'] ?? '')) . "\n" . trim((string)($c['a'] ?? ''));
+            if (!empty($c['detail'])) $ctx .= "\n" . trim((string)$c['detail']);
+            $ctx .= "\n\n";
+        }
+
+        $system = 'Ты — суфлёр на техническом собеседовании, помогаешь разработчику пройти собеседование. '
+            . 'Собеседник задаёт вопросы — на каждый дай ответ, который кандидат скажет вслух. По-русски, живо, без воды и без длинных markdown-заголовков. '
+            . 'ФОРМАТ: сначала СУТЬ — 1-2 коротких предложения, готовых сказать сразу. '
+            . 'Если есть что добавить (детали, нюансы, короткий пример кода) — дай это ПОСЛЕ ПУСТОЙ СТРОКИ отдельным блоком. Если добавлять нечего — только суть, без пустой строки. '
+            . 'Если вопрос — уточнение к уже обсуждённому в этой беседе (например «а почему?», «а если...», «они» — это про предыдущую тему), понимай его В КОНТЕКСТЕ прошлых реплик и НЕ переспрашивай. '
+            . 'Отвечай по делу; не выдумывай факты — если не уверен, так и скажи. Не отклоняйся от темы IT!';
+        if ($ctx !== '') $system .= "\n\nСправка (если релевантна вопросу):\n" . $ctx;
+
+        // история этой темы (предыдущие вопрос-ответ) → многоходовый диалог, чтобы модель понимала уточнения
+        $msgs = [];
+        foreach (array_slice($b['history'] ?? [], -4) as $h) {
+            if (!is_array($h)) continue;
+            $hq = trim((string)($h['q'] ?? ''));
+            $ha = trim((string)($h['a'] ?? ''));
+            if ($hq === '' || $ha === '') continue;      // только полные пары — иначе ломается чередование ролей
+            $msgs[] = ['role' => 'user', 'content' => $hq];
+            $msgs[] = ['role' => 'assistant', 'content' => $ha];
+        }
+        $msgs[] = ['role' => 'user', 'content' => $question];
+
+        $payload = json_encode([
+            'model'      => ASK_MODEL,
+            'max_tokens' => 800,
+            'stream'     => true,
+            'system'     => $system,
+            'messages'   => $msgs,
+        ], JSON_UNESCAPED_UNICODE);
+
+        // стримим текст по мере генерации. text/event-stream не в gzip_types (не буферизуется),
+        // X-Accel-Buffering: no отключает буфер fastcgi в nginx
+        header('Content-Type: text/event-stream; charset=utf-8');
+        header('X-Accel-Buffering: no');
+        header('Cache-Control: no-cache');
+        while (ob_get_level() > 0) { ob_end_flush(); }
+
+        $buf = '';
+        $ch = curl_init('https://api.anthropic.com/v1/messages');
+        curl_setopt_array($ch, [
+            CURLOPT_POST       => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_TIMEOUT    => 60,
+            CURLOPT_HTTPHEADER => [
+                'content-type: application/json',
+                'x-api-key: ' . $key,
+                'anthropic-version: 2023-06-01',
+            ],
+            CURLOPT_WRITEFUNCTION => function ($c, $data) use (&$buf) {
+                $buf .= $data;
+                while (($nl = strpos($buf, "\n")) !== false) {
+                    $line = trim(substr($buf, 0, $nl));
+                    $buf = substr($buf, $nl + 1);
+                    if ($line === '' || strncmp($line, 'data:', 5) !== 0) continue;
+                    $ev = json_decode(trim(substr($line, 5)), true);
+                    if (!is_array($ev)) continue;
+                    if (($ev['type'] ?? '') === 'content_block_delta' && ($ev['delta']['type'] ?? '') === 'text_delta') {
+                        echo $ev['delta']['text']; flush();
+                    } elseif (($ev['type'] ?? '') === 'error') {
+                        echo "\n[ошибка Anthropic: " . ($ev['error']['message'] ?? '?') . ']'; flush();
+                    }
+                }
+                return strlen($data);
+            },
+        ]);
+        curl_exec($ch);
+        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlErr = curl_error($ch);
+        curl_close($ch);
+        // ошибка ДО стрима (напр. 401): тело — обычный JSON, а не SSE — оно осталось в $buf
+        if ($code >= 400) {
+            $e = json_decode($buf, true);
+            echo "\n[ошибка Anthropic " . $code . ': ' . ($e['error']['message'] ?? $curlErr) . ']';
+        } elseif ($curlErr !== '') {
+            echo "\n[сеть: " . $curlErr . ']';
+        }
+        exit;
+    }
+
     // --- источники мониторинга вакансий ---
     // GET /tg-files — список файлов выгрузки в .claude/tg_history
     if ($method === 'GET' && $path === '/tg-files') {
@@ -118,6 +230,7 @@ try {
         if (is_dir($dir)) {
             foreach (scandir($dir) as $f) {
                 if ($f === '.' || $f === '..' || is_dir("$dir/$f")) continue;
+                if (substr($f, -6) !== '.jsonl') continue; // только выгрузки тг, без мусора вроде .DS_Store
                 $files[] = $f;
             }
         }
@@ -205,11 +318,11 @@ try {
         out(['ok' => true]);
     }
     // PATCH /vacancies/{id}/apply {apply_status?, cover_letter?, apply_note?}
-    // ставит агент: черновик (queued+cover_letter), applied (+applied_at), needs_manual (+заметка -> уведомление)
+    // ставит агент: черновик (queued+cover_letter), applied (+applied_at), needs_manual (+заметка)
     if ($method === 'PATCH' && preg_match('#^/vacancies/(\d+)/apply$#', $path, $m)) {
         $id = (int)$m[1];
         $b = body();
-        $allowed = ['new', 'queued', 'approved', 'applied', 'needs_manual', 'skipped'];
+        $allowed = ['new', 'queued', 'approved', 'applied', 'needs_manual'];
         $status = in_array($b['apply_status'] ?? '', $allowed, true) ? (string)$b['apply_status'] : null;
         $sets = []; $args = [':id' => $id];
         if ($status !== null) { $sets[] = 'apply_status = :st'; $args[':st'] = $status; }
@@ -218,23 +331,12 @@ try {
         if ($status === 'applied') { $sets[] = 'applied_at = now()'; }
         if (!$sets) fail('nothing to update');
         db()->prepare('UPDATE vacancies SET ' . implode(', ', $sets) . ' WHERE id = :id')->execute($args);
-        if ($status === 'needs_manual') { // нужна твоя рука -> под колокольчик
-            $q = db()->prepare('SELECT title FROM vacancies WHERE id = :id'); $q->execute([':id' => $id]);
-            db()->prepare("INSERT INTO notifications(vacancy_id, kind, title, body) VALUES (:vid, 'needs_manual', :t, :b)")
-                ->execute([':vid' => $id, ':t' => (string)$q->fetchColumn(),
-                           ':b' => (string)($b['apply_note'] ?? 'Нужна ручная форма/тест для отклика')]);
-        }
         out(['ok' => true]);
     }
     // POST /vacancies/{id}/approve — пользователь одобряет отправку отклика
     if ($method === 'POST' && preg_match('#^/vacancies/(\d+)/approve$#', $path, $m)) {
         db()->prepare("UPDATE vacancies SET apply_status = 'approved' WHERE id = :id AND apply_status IN ('queued','needs_manual')")
             ->execute([':id' => (int)$m[1]]);
-        out(['ok' => true]);
-    }
-    // POST /vacancies/{id}/skip — пользователь пропускает отклик
-    if ($method === 'POST' && preg_match('#^/vacancies/(\d+)/skip$#', $path, $m)) {
-        db()->prepare("UPDATE vacancies SET apply_status = 'skipped' WHERE id = :id")->execute([':id' => (int)$m[1]]);
         out(['ok' => true]);
     }
     // POST /applied/check — запрос сверки откликов (сессия/агент подхватит и проверит по hh/Хабру)
@@ -250,24 +352,6 @@ try {
         if (array_key_exists('company', $b))     { $sets[] = 'company = :c';      $args[':c'] = (string)$b['company']; }
         if (array_key_exists('company_url', $b)) { $sets[] = 'company_url = :u';  $args[':u'] = (string)$b['company_url']; }
         if ($sets) db()->prepare('UPDATE vacancies SET ' . implode(', ', $sets) . ' WHERE id = :id')->execute($args);
-        out(['ok' => true]);
-    }
-    // GET /notifications — список + счётчик непрочитанных
-    if ($method === 'GET' && $path === '/notifications') {
-        $rows = db()->query('SELECT id, vacancy_id, kind, title, body, read, created_at FROM notifications
-                             ORDER BY read, created_at DESC LIMIT 100')->fetchAll();
-        $unread = (int)db()->query('SELECT count(*) FROM notifications WHERE NOT read')->fetchColumn();
-        out(['unread' => $unread, 'items' => array_map(static function (array $r): array {
-            return ['id' => (string)$r['id'], 'vacancyId' => $r['vacancy_id'] !== null ? (string)$r['vacancy_id'] : null,
-                    'kind' => $r['kind'], 'title' => $r['title'], 'body' => $r['body'],
-                    'read' => (bool)$r['read'], 'createdAt' => $r['created_at']];
-        }, $rows)]);
-    }
-    // POST /notifications/read {id?} — без id помечает прочитанными все
-    if ($method === 'POST' && $path === '/notifications/read') {
-        $b = body();
-        if (isset($b['id'])) db()->prepare('UPDATE notifications SET read = true WHERE id = :id')->execute([':id' => (int)$b['id']]);
-        else db()->query('UPDATE notifications SET read = true WHERE NOT read');
         out(['ok' => true]);
     }
     // POST /analyze/request — ручной запрос прогона (крон подхватит)

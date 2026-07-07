@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS vacancies (
     link_text  TEXT NOT NULL DEFAULT '',  -- содержимое страницы по ссылке (полное описание вакансии)
     mismatches JSONB NOT NULL DEFAULT '[]', -- главные несоответствия резюме (массив строк)
     -- автоотклик
-    apply_status TEXT NOT NULL DEFAULT 'new', -- new | queued (черновик готов, ждёт одобрения) | approved (одобрен, ждёт отправки) | applied | needs_manual | skipped
+    apply_status TEXT NOT NULL DEFAULT 'new', -- new | queued (черновик готов, ждёт одобрения) | approved (одобрен, ждёт отправки) | applied | needs_manual
     applied_at   TIMESTAMPTZ,               -- когда откликнулись
     cover_letter TEXT NOT NULL DEFAULT '',   -- черновик сопроводительного
     apply_note   TEXT NOT NULL DEFAULT '',   -- заметка (причина ручной формы / детали отклика)
@@ -68,18 +68,6 @@ CREATE TABLE IF NOT EXISTS vacancies (
     UNIQUE (source_id, msg_id)            -- одно сообщение = одна вакансия
 );
 CREATE INDEX IF NOT EXISTS idx_vacancies_score ON vacancies(score DESC);
-
--- уведомления под колокольчик (нужна ручная форма/тест и т.п.)
-CREATE TABLE IF NOT EXISTS notifications (
-    id         SERIAL PRIMARY KEY,
-    vacancy_id INT REFERENCES vacancies(id) ON DELETE CASCADE,
-    kind       TEXT NOT NULL DEFAULT '',   -- 'needs_manual' и т.п.
-    title      TEXT NOT NULL DEFAULT '',
-    body       TEXT NOT NULL DEFAULT '',
-    read       BOOLEAN NOT NULL DEFAULT false,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(read, created_at DESC);
 
 -- лог работы агента (что делал автопрогон: запуск, скан, отклики, ошибки)
 CREATE TABLE IF NOT EXISTS agent_log (

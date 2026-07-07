@@ -27,6 +27,7 @@ services:
       - ./db:/var/www/db:ro
       - ./public:/var/www/public:ro
       - ./.claude/tg_history:/var/www/tg_history:ro
+      - ${HOME}/.config/sobes/env:/var/www/secret.env:ro
     networks:
       - sobes-internal
     depends_on:
