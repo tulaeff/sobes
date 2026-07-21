@@ -6,6 +6,8 @@ header('Content-Type: application/json; charset=utf-8');
 const CACHE_KEY = 'sobes:cards';
 // модель AI-суфлёра. Быстрая/дешёвая — haiku (для живого суфлёра). Умнее/медленнее: claude-sonnet-5, claude-opus-4-8.
 const ASK_MODEL = 'claude-haiku-4-5';
+// модель разбора скрина (vision): sonnet-5 — сильна по коду; можно claude-opus-4-8 для сложных задач.
+const VISION_MODEL = 'claude-sonnet-5';
 
 // ---------- подключения ----------
 function db(): PDO {
@@ -62,6 +64,55 @@ function anthropicKey(): ?string {
         }
     }
     return $found;
+}
+
+// стримит ответ Anthropic по SSE прямо в тело HTTP-ответа (text/event-stream — не буферизуется nginx). Завершает запрос.
+function anthropicStream(string $payload, string $key): void {
+    header('Content-Type: text/event-stream; charset=utf-8');
+    header('X-Accel-Buffering: no');
+    header('Cache-Control: no-cache');
+    while (ob_get_level() > 0) { ob_end_flush(); }
+
+    $buf = '';
+    $ch = curl_init('https://api.anthropic.com/v1/messages');
+    curl_setopt_array($ch, [
+        CURLOPT_POST       => true,
+        CURLOPT_POSTFIELDS => $payload,
+        CURLOPT_TIMEOUT    => 90,
+        CURLOPT_HTTPHEADER => [
+            'content-type: application/json',
+            'x-api-key: ' . $key,
+            'anthropic-version: 2023-06-01',
+        ],
+        CURLOPT_WRITEFUNCTION => function ($c, $data) use (&$buf) {
+            $buf .= $data;
+            while (($nl = strpos($buf, "\n")) !== false) {
+                $line = trim(substr($buf, 0, $nl));
+                $buf = substr($buf, $nl + 1);
+                if ($line === '' || strncmp($line, 'data:', 5) !== 0) continue;
+                $ev = json_decode(trim(substr($line, 5)), true);
+                if (!is_array($ev)) continue;
+                if (($ev['type'] ?? '') === 'content_block_delta' && ($ev['delta']['type'] ?? '') === 'text_delta') {
+                    echo $ev['delta']['text']; flush();
+                } elseif (($ev['type'] ?? '') === 'error') {
+                    echo "\n[ошибка Anthropic: " . ($ev['error']['message'] ?? '?') . ']'; flush();
+                }
+            }
+            return strlen($data);
+        },
+    ]);
+    curl_exec($ch);
+    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlErr = curl_error($ch);
+    curl_close($ch);
+    // ошибка ДО стрима (напр. 401): тело — обычный JSON, а не SSE — оно осталось в $buf
+    if ($code >= 400) {
+        $e = json_decode($buf, true);
+        echo "\n[ошибка Anthropic " . $code . ': ' . ($e['error']['message'] ?? $curlErr) . ']';
+    } elseif ($curlErr !== '') {
+        echo "\n[сеть: " . $curlErr . ']';
+    }
+    exit;
 }
 
 // ---------- сборка полезной нагрузки ----------
@@ -173,53 +224,49 @@ try {
             'messages'   => $msgs,
         ], JSON_UNESCAPED_UNICODE);
 
-        // стримим текст по мере генерации. text/event-stream не в gzip_types (не буферизуется),
-        // X-Accel-Buffering: no отключает буфер fastcgi в nginx
-        header('Content-Type: text/event-stream; charset=utf-8');
-        header('X-Accel-Buffering: no');
-        header('Cache-Control: no-cache');
-        while (ob_get_level() > 0) { ob_end_flush(); }
+        anthropicStream($payload, $key); // стримит и завершает запрос
+    }
 
-        $buf = '';
-        $ch = curl_init('https://api.anthropic.com/v1/messages');
-        curl_setopt_array($ch, [
-            CURLOPT_POST       => true,
-            CURLOPT_POSTFIELDS => $payload,
-            CURLOPT_TIMEOUT    => 60,
-            CURLOPT_HTTPHEADER => [
-                'content-type: application/json',
-                'x-api-key: ' . $key,
-                'anthropic-version: 2023-06-01',
-            ],
-            CURLOPT_WRITEFUNCTION => function ($c, $data) use (&$buf) {
-                $buf .= $data;
-                while (($nl = strpos($buf, "\n")) !== false) {
-                    $line = trim(substr($buf, 0, $nl));
-                    $buf = substr($buf, $nl + 1);
-                    if ($line === '' || strncmp($line, 'data:', 5) !== 0) continue;
-                    $ev = json_decode(trim(substr($line, 5)), true);
-                    if (!is_array($ev)) continue;
-                    if (($ev['type'] ?? '') === 'content_block_delta' && ($ev['delta']['type'] ?? '') === 'text_delta') {
-                        echo $ev['delta']['text']; flush();
-                    } elseif (($ev['type'] ?? '') === 'error') {
-                        echo "\n[ошибка Anthropic: " . ($ev['error']['message'] ?? '?') . ']'; flush();
-                    }
-                }
-                return strlen($data);
-            },
-        ]);
-        curl_exec($ch);
-        $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlErr = curl_error($ch);
-        curl_close($ch);
-        // ошибка ДО стрима (напр. 401): тело — обычный JSON, а не SSE — оно осталось в $buf
-        if ($code >= 400) {
-            $e = json_decode($buf, true);
-            echo "\n[ошибка Anthropic " . $code . ': ' . ($e['error']['message'] ?? $curlErr) . ']';
-        } elseif ($curlErr !== '') {
-            echo "\n[сеть: " . $curlErr . ']';
+    // POST /vision — разбор скрина отслеживаемой вкладки (код/ошибки/задача) через Claude vision
+    if ($method === 'POST' && $path === '/vision') {
+        $b = body();
+        $img = (string)($b['image'] ?? '');
+        if ($img === '') fail('нет картинки');
+        $key = anthropicKey();
+        if (!$key) fail('нет ANTHROPIC_API_KEY (положи в ~/.config/sobes/env)', 500);
+
+        // принимаем data-URL или сырой base64
+        $media = 'image/jpeg';
+        if (preg_match('#^data:(image/[a-z.+-]+);base64,(.*)$#is', $img, $m)) {
+            $media = strtolower($m[1]); $data = $m[2];
+        } else {
+            $data = $img;
         }
-        exit;
+        $data = trim($data);
+        if ($data === '') fail('пустая картинка');
+
+        $system = 'Ты — суфлёр на техническом собеседовании. На картинке — экран собеседника: код, вопрос или задача. '
+            . 'Определи, что это, и дай кандидату короткий разговорный ответ по-русски. '
+            . 'Если код с ошибкой — назови ошибку и как починить. Если спрашивают «что выведет этот код» — дай точный вывод и кратко почему. '
+            . 'Если это задача (например «отсортируй массив», «напиши функцию») — реши её рабочим кодом. Если вопрос — ответь по сути. '
+            . 'ФОРМАТ: сначала суть/ответ в 1-2 предложениях. Детали, разбор или код — ПОСЛЕ пустой строки. Без воды, не выдумывай — если на скрине не разобрать, так и скажи.';
+
+        $payload = json_encode([
+            'model'      => VISION_MODEL,
+            'max_tokens' => 1500,
+            'stream'     => true,
+            'thinking'   => ['type' => 'disabled'], // без «раздумий» — быстрее для живого собеса
+            'system'     => $system,
+            'messages'   => [[
+                'role'    => 'user',
+                'content' => [
+                    ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => $media, 'data' => $data]],
+                    ['type' => 'text', 'text' => 'Разбери, что на этом экране, и дай ответ.'],
+                ],
+            ]],
+        ], JSON_UNESCAPED_UNICODE);
+
+        anthropicStream($payload, $key);
     }
 
     // --- источники мониторинга вакансий ---
@@ -283,9 +330,9 @@ try {
     // --- найденные вакансии ---
     // GET /vacancies
     if ($method === 'GET' && $path === '/vacancies') {
-        $rows = db()->query('SELECT v.id, v.source_id, v.chat, v.score, v.title, v.reason, v.link, v.text, v.link_text, v.mismatches,
+        $rows = db()->query('SELECT v.id, v.source_id, v.chat, v.msg_id, v.score, v.title, v.reason, v.link, v.text, v.link_text, v.mismatches,
                                     v.apply_status, v.applied_at, v.cover_letter, v.apply_note, v.company, v.company_url,
-                                    COALESCE(s.kind, \'tg\') AS kind
+                                    COALESCE(s.kind, \'tg\') AS kind, s.value AS src_value
                              FROM vacancies v LEFT JOIN sources s ON s.id = v.source_id
                              ORDER BY v.score DESC, v.created_at DESC')->fetchAll();
         // дедуп по нормализованному заголовку (одна вакансия с hh-сайта и из тг-канала hh-бота = дубль):
@@ -303,9 +350,19 @@ try {
         $rows = array_merge(array_values($groups), $loose);
         usort($rows, static function (array $a, array $b): int { return ((int)$b['score']) <=> ((int)$a['score']); });
         out(array_map(static function (array $r): array {
+            // прямая ссылка на пост в телеграме: id канала берём из имени файла-выгрузки (…_<id>.jsonl),
+            // убираем супергрупповой префикс 100 → t.me/c/<cid>/<msg_id>. Работает, если юзер в этом канале.
+            $tgPostUrl = null;
+            if (($r['kind'] ?? 'tg') !== 'account'
+                && (int)$r['msg_id'] > 0
+                && preg_match('/(\d{6,})\.jsonl$/', (string)($r['src_value'] ?? ''), $mm)) {
+                $cid = $mm[1];
+                if (strlen($cid) > 3 && strncmp($cid, '100', 3) === 0) $cid = substr($cid, 3);
+                $tgPostUrl = 'https://t.me/c/' . $cid . '/' . (int)$r['msg_id'];
+            }
             return ['id' => (string)$r['id'], 'sourceId' => $r['source_id'] === null ? '' : (string)$r['source_id'], 'chat' => $r['chat'], 'score' => (int)$r['score'],
                     'title' => $r['title'], 'reason' => $r['reason'], 'link' => $r['link'], 'text' => $r['text'],
-                    'linkText' => $r['link_text'], 'kind' => $r['kind'],
+                    'linkText' => $r['link_text'], 'kind' => $r['kind'], 'tgPostUrl' => $tgPostUrl,
                     'applyStatus' => $r['apply_status'], 'appliedAt' => $r['applied_at'],
                     'coverLetter' => $r['cover_letter'], 'applyNote' => $r['apply_note'],
                     'company' => $r['company'], 'companyUrl' => $r['company_url'],
@@ -337,6 +394,25 @@ try {
     if ($method === 'POST' && preg_match('#^/vacancies/(\d+)/approve$#', $path, $m)) {
         db()->prepare("UPDATE vacancies SET apply_status = 'approved' WHERE id = :id AND apply_status IN ('queued','needs_manual')")
             ->execute([':id' => (int)$m[1]]);
+        out(['ok' => true]);
+    }
+    // POST /vacancies/{id}/skip — юзер отказался от вакансии навсегда: скрываем из выдачи, но строку
+    // ОСТАВЛЯЕМ в БД, иначе следующий скан вставит её заново (дедуп идёт по UNIQUE(source_id,msg_id)).
+    // Гасим всю группу дублей по нормализованному заголовку — в UI это одна карточка.
+    if ($method === 'POST' && preg_match('#^/vacancies/(\d+)/skip$#', $path, $m)) {
+        $id = (int)$m[1];
+        $q = db()->prepare('SELECT title FROM vacancies WHERE id = :id');
+        $q->execute([':id' => $id]);
+        $title = trim((string)$q->fetchColumn());
+        if ($title === '') {
+            db()->prepare("UPDATE vacancies SET apply_status = 'skipped' WHERE id = :id")->execute([':id' => $id]);
+        } else {
+            db()->prepare("UPDATE vacancies SET apply_status = 'skipped'
+                           WHERE regexp_replace(lower(btrim(title)), '\\s+', ' ', 'g')
+                               = regexp_replace(lower(btrim(:t)), '\\s+', ' ', 'g')
+                             AND apply_status <> 'applied'") // факт отклика не затираем
+                ->execute([':t' => $title]);
+        }
         out(['ok' => true]);
     }
     // POST /applied/check — запрос сверки откликов (сессия/агент подхватит и проверит по hh/Хабру)

@@ -16,23 +16,30 @@
       body: bodyObj ? JSON.stringify(bodyObj) : undefined
     });
   }
+  // POST со стримом: читает тело чанками и отдаёт их в onChunk (для SSE-роутов /ask, /vision)
+  function streamPost(url, bodyObj, onChunk) {
+    return fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyObj) })
+      .then(function (r) {
+        if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
+        var reader = r.body.getReader(), dec = new TextDecoder();
+        return (function pump() {
+          return reader.read().then(function (res) {
+            if (res.done) return;
+            if (res.value) onChunk(dec.decode(res.value, { stream: true }));
+            return pump();
+          });
+        })();
+      });
+  }
 
   SOBES.api = {
     load: function () { return req('/api/cards'); },
     ask: function (question, cards) { return jsonPost('/api/ask', 'POST', { question: question, cards: cards || [] }); },
     askStream: function (question, cards, onChunk, history) {
-      return fetch('/api/ask', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: question, cards: cards || [], history: history || [] }) })
-        .then(function (r) {
-          if (!r.ok || !r.body) throw new Error('HTTP ' + r.status);
-          var reader = r.body.getReader(), dec = new TextDecoder();
-          return (function pump() {
-            return reader.read().then(function (res) {
-              if (res.done) return;
-              if (res.value) onChunk(dec.decode(res.value, { stream: true }));
-              return pump();
-            });
-          })();
-        });
+      return streamPost('/api/ask', { question: question, cards: cards || [], history: history || [] }, onChunk);
+    },
+    visionStream: function (image, onChunk) {
+      return streamPost('/api/vision', { image: image }, onChunk);
     },
     setPin: function (id, pinned) { return jsonPost('/api/cards/' + id + '/pin', 'POST', { pinned: pinned }); },
     clearPins: function () { return jsonPost('/api/pins/clear', 'POST'); },
@@ -50,6 +57,7 @@
     listVacancies: function () { return req('/api/vacancies'); },
     deleteVacancy: function (id) { return req('/api/vacancies/' + id, { method: 'DELETE' }); },
     approveApply: function (id) { return jsonPost('/api/vacancies/' + id + '/approve', 'POST'); },
+    skipApply: function (id) { return jsonPost('/api/vacancies/' + id + '/skip', 'POST'); },
     markApplied: function (id) { return jsonPost('/api/vacancies/' + id + '/apply', 'PATCH', { apply_status: 'applied' }); },
     saveCoverLetter: function (id, text) { return jsonPost('/api/vacancies/' + id + '/apply', 'PATCH', { cover_letter: text }); },
     analyzeStatus: function () { return req('/api/analyze/status'); }

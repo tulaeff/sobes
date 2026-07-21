@@ -538,6 +538,11 @@ mark, .hl {
 .vac-m a:hover { text-decoration: underline; }
 .vac-m a.vac-find { display: inline-block; border: 1px solid var(--border-2); border-radius: 6px; padding: 0 7px; text-decoration: none; }
 .vac-m a.vac-find:hover { border-color: var(--accent-2); text-decoration: none; background: rgba(34,211,238,.08); }
+.vac-m a.vac-apply-link { display: inline-block; color: #cfc9ff; background: var(--accent-soft); border: 1px solid rgba(124,108,255,.5); border-radius: 6px; padding: 1px 9px; font-weight: 600; text-decoration: none; }
+.vac-m a.vac-apply-link:hover { background: rgba(124,108,255,.25); text-decoration: none; }
+.vac-m a.vac-tg-link { display: inline-block; border: 1px solid var(--border-2); border-radius: 6px; padding: 0 7px; text-decoration: none; }
+.vac-m a.vac-tg-link:hover { border-color: var(--accent-2); text-decoration: none; background: rgba(34,211,238,.08); }
+.vac-apply-contact { color: var(--text-dim); }
 .vac .more { margin-top: 8px; }
 .vac-text { margin-top: 8px; background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
 .vac-text.hide { display: none; }
@@ -694,6 +699,9 @@ mark, .hl {
 .suff-pause.paused { color: #ffd479; border-color: rgba(255,212,121,.5); background: rgba(255,212,121,.12); }
 .suff-reset { flex: none; background: var(--panel); border: 1px solid var(--border-2); color: var(--text-dim); border-radius: 8px; padding: 5px 11px; font-size: 12.5px; font-family: inherit; cursor: pointer; white-space: nowrap; }
 .suff-reset:hover { color: #ff8a8a; border-color: rgba(255,138,138,.5); background: rgba(255,138,138,.1); }
+.suff-shot { flex: none; background: var(--panel); border: 1px solid var(--border-2); color: var(--text-dim); border-radius: 8px; padding: 5px 11px; font-size: 12.5px; font-family: inherit; cursor: pointer; white-space: nowrap; }
+.suff-shot:hover { color: var(--accent-2); border-color: var(--accent); background: var(--accent-soft); }
+.suff-shot-img { display: block; max-width: 340px; max-height: 210px; margin-bottom: 8px; border: 1px solid var(--border-2); border-radius: 8px; }
 
 /* деление окна 50/50: слева ответы, справа живое видео отслеживаемой вкладки */
 .suff-split { flex: 1; min-height: 0; display: flex; }

@@ -570,6 +570,22 @@
     var b = document.createElement('button'); b.type = 'button';
     b.className = 'btn' + (cls ? ' ' + cls : ''); b.textContent = text; b.onclick = on; return b;
   }
+  // отказ от вакансии навсегда: уходит из выдачи и больше не всплывёт при следующих сканах
+  function skipBtn(v) {
+    var b = vbtn('🚫 Пропустить', '', function () { api.skipApply(v.id).then(loadVacancies).catch(loadVacancies); });
+    b.title = 'Не откликаться на неё ни сейчас, ни потом — убрать из выдачи навсегда';
+    return b;
+  }
+  // нормализуем контакт из поста в кликабельный href (url / t.me / @username / email); иначе null — покажем текстом
+  function applyHref(s) {
+    s = (s || '').trim();
+    if (!s) return null;
+    if (/^https?:\/\//i.test(s)) return s;
+    if (/^(t\.me|telegram\.me)\//i.test(s)) return 'https://' + s;
+    if (/^@[A-Za-z0-9_]{3,}$/.test(s)) return 'https://t.me/' + s.slice(1);
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s)) return 'mailto:' + s;
+    return null;
+  }
   // поиск сайта/раздела вакансий компании ВНЕ источника
   function companySearchUrl(v) {
     var q = (v.company || v.title || '').trim();
@@ -618,6 +634,7 @@
       var box = document.createElement('div'); box.className = 'vac-apply';
       var row = document.createElement('div'); row.className = 'vac-apply-btns';
       row.appendChild(vbtn('✅ Одобрить отправку', 'primary', function () { api.approveApply(v.id).then(loadVacancies).catch(loadVacancies); }));
+      row.appendChild(skipBtn(v));
       box.appendChild(coverLetterBlock(v, row));
       box.appendChild(row);
       return box;
@@ -628,6 +645,7 @@
       box2.appendChild(n);
       var row2 = document.createElement('div'); row2.className = 'vac-apply-btns';
       row2.appendChild(vbtn('✓ Я откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      row2.appendChild(skipBtn(v));
       box2.appendChild(coverLetterBlock(v, row2));
       box2.appendChild(row2);
       return box2;
@@ -638,12 +656,14 @@
       box3.appendChild(w3);
       var row3 = document.createElement('div'); row3.className = 'vac-apply-btns';
       row3.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      row3.appendChild(skipBtn(v));
       box3.appendChild(row3); return box3;
     }
     if (st === 'new') { // подходящая, ещё без отклика — дать пометить вручную (для тг отклик всегда ручной)
       var box4 = document.createElement('div'); box4.className = 'vac-apply';
       var row4 = document.createElement('div'); row4.className = 'vac-apply-btns';
       row4.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      row4.appendChild(skipBtn(v));
       box4.appendChild(row4); return box4;
     }
     return null;
@@ -691,7 +711,22 @@
         mm.appendChild(ul); card.appendChild(mm);
       }
       var meta = document.createElement('div'); meta.className = 'vac-m';
-      if (v.link) { var a = document.createElement('a'); a.href = v.link; a.target = '_blank'; a.rel = 'noopener'; a.textContent = '🔗 открыть'; meta.appendChild(a); meta.appendChild(document.createTextNode('   ')); }
+      if (v.link && v.applyStatus !== 'applied') { // на уже откликнутых кнопка отклика не нужна
+        var href = applyHref(v.link);
+        if (href) {
+          var a = document.createElement('a'); a.className = 'vac-apply-link'; a.href = href; a.target = '_blank'; a.rel = 'noopener';
+          a.textContent = '📩 Откликнуться'; a.title = v.link;
+          meta.appendChild(a); meta.appendChild(document.createTextNode(' '));
+        } else { // контакт не оформлен ссылкой (телефон, "писать в ЛС" и т.п.) — показываем текстом
+          var ct = document.createElement('span'); ct.className = 'vac-apply-contact'; ct.textContent = '📩 ' + v.link;
+          meta.appendChild(ct); meta.appendChild(document.createTextNode(' '));
+        }
+      }
+      if (v.tgPostUrl) {
+        var tg = document.createElement('a'); tg.className = 'vac-tg-link'; tg.href = v.tgPostUrl; tg.target = '_blank'; tg.rel = 'noopener';
+        tg.textContent = '📨 Открыть в телеграме'; tg.title = 'Оригинальный пост (нужно быть в этом канале)';
+        meta.appendChild(tg); meta.appendChild(document.createTextNode(' '));
+      }
       var find = document.createElement('a'); find.className = 'vac-find';
       find.href = v.companyUrl || companySearchUrl(v); find.target = '_blank'; find.rel = 'noopener';
       find.textContent = v.companyUrl ? '🏢 сайт компании' : '🔎 искать компанию';
@@ -753,6 +788,7 @@
     trans: document.getElementById('suff-transcript'),
     pause: document.getElementById('suff-pause'),
     reset: document.getElementById('suff-reset'),
+    shot: document.getElementById('suff-shot'),
     video: document.getElementById('suff-video'),
     videoWrap: document.getElementById('suff-video-wrap')
   };
@@ -1002,6 +1038,55 @@
     });
   }
 
+  // ---- разбор скрина: снять кадр правой панели (видео вкладки) и отправить в Claude vision ----
+  // блок скрина — отдельная ветка сверху, помечена «протухшим» временем, чтобы речь к ней не липла
+  function suffAddShot(dataUrl) {
+    var t = { words: {}, cats: {}, lastAt: Date.now() - 999999, el: null, answersEl: null, qa: [] };
+    var el = document.createElement('div'); el.className = 'suff-topic';
+    var head = document.createElement('div'); head.className = 'suff-topic-head'; head.textContent = '🖼 Разбор скрина';
+    var ans = document.createElement('div'); ans.className = 'suff-topic-answers';
+    el.appendChild(head); el.appendChild(ans);
+    t.el = el; t.answersEl = ans;
+    if (!suffThreads.length) { els.results.innerHTML = ''; cardEls = []; state.sel = -1; }
+    suffMutate(function () { els.results.insertBefore(el, els.results.firstChild); });
+    suffThreads.unshift(t);
+    var qa = document.createElement('div'); qa.className = 'suff-qa';
+    var img = document.createElement('img'); img.className = 'suff-shot-img'; img.src = dataUrl; img.alt = 'скрин вкладки';
+    var a = document.createElement('div'); a.className = 'suff-qa-a suff-ai-body';
+    a.innerHTML = '<span class="suff-ai-wait">🤖 смотрю на скрин…</span>';
+    qa.appendChild(img); qa.appendChild(a);
+    suffMutate(function () { ans.appendChild(qa); });
+    els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length;
+    return a;
+  }
+  function suffAskShot() {
+    if (!suffMain) return;
+    var vid = suff.video;
+    if (!vid || !vid.srcObject || !vid.videoWidth) { suffSetStatus('нет видео вкладки — включи захват с картинкой', 'err'); return; }
+    var vw = vid.videoWidth, vh = vid.videoHeight, scale = Math.min(1, 1280 / vw); // ужимаем до 1280 по ширине
+    var cw = Math.round(vw * scale), ch = Math.round(vh * scale);
+    var cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
+    cv.getContext('2d').drawImage(vid, 0, 0, cw, ch);
+    var dataUrl = cv.toDataURL('image/jpeg', 0.85);
+    var body = suffAddShot(dataUrl);
+    var acc = '';
+    api.visionStream(dataUrl, function (chunk) {
+      if (!body.isConnected) return;
+      acc += chunk;
+      suffMutate(function () { body.textContent = suffSplitAnswer(acc).main; });
+    }).then(function () {
+      if (!body.isConnected) return;
+      var parts = suffSplitAnswer(acc);
+      suffMutate(function () {
+        body.innerHTML = parts.main ? mdBlock(parts.main) : (acc ? mdBlock(acc) : '<span class="suff-ai-err">пусто</span>');
+        if (parts.more) body.appendChild(suffMoreBlock(parts.more));
+      });
+    }).catch(function (e) {
+      if (!body.isConnected) return;
+      body.innerHTML = (acc ? mdBlock(suffSplitAnswer(acc).main) + '<br>' : '') + '<span class="suff-ai-err">обрыв (' + escHtml(String((e && e.message) || e)) + ')</span>';
+    });
+  }
+
   // накапливаем распознанную речь и спрашиваем ИИ, когда фраза «устоялась» (пауза)
   var suffAskTimer = null;
   function suffAskSchedule() {
@@ -1080,7 +1165,10 @@
   function suffReset() {
     if (!suffMain) return;
     if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
+    // «чистый лист»: и контент, и контекст для ИИ (history строится из topic.qa — уходит вместе с темами)
     suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
+    suffFinal = '';                                   // и видимый транскрипт тоже
+    if (suff.trans) suff.trans.innerHTML = '';
     suffShow();   // тем нет → плейсхолдер, чистый экран под новый вопрос
   }
   function suffStop() { // полностью выйти из режима суфлёра
@@ -1130,6 +1218,7 @@
   if (suff.toggle) suff.toggle.addEventListener('click', function () { if (suffMain) suffStop(); else suffEnter(); });
   if (suff.pause) suff.pause.addEventListener('click', suffPauseToggle);
   if (suff.reset) suff.reset.addEventListener('click', suffReset);
+  if (suff.shot) suff.shot.addEventListener('click', suffAskShot);
 
   window.addEventListener('hashchange', route);
 

@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS vacancies (
     link_text  TEXT NOT NULL DEFAULT '',  -- содержимое страницы по ссылке (полное описание вакансии)
     mismatches JSONB NOT NULL DEFAULT '[]', -- главные несоответствия резюме (массив строк)
     -- автоотклик
-    apply_status TEXT NOT NULL DEFAULT 'new', -- new | queued (черновик готов, ждёт одобрения) | approved (одобрен, ждёт отправки) | applied | needs_manual
+    apply_status TEXT NOT NULL DEFAULT 'new', -- new | queued (черновик готов, ждёт одобрения) | approved (одобрен, ждёт отправки) | applied | needs_manual | skipped (юзер отказался навсегда, скрыта из UI)
     applied_at   TIMESTAMPTZ,               -- когда откликнулись
     cover_letter TEXT NOT NULL DEFAULT '',   -- черновик сопроводительного
     apply_note   TEXT NOT NULL DEFAULT '',   -- заметка (причина ручной формы / детали отклика)
