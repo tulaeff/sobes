@@ -185,6 +185,12 @@ kbd {
 }
 .mode-btn:hover { color: var(--text); border-color: var(--accent); }
 .mode-btn.on { color: #cfc9ff; border-color: var(--accent); background: var(--accent-soft); }
+/* пришёл ответ, пока смотришь категорию — точка на тумблере, он же вернёт к дереву */
+.mode-btn.new { position: relative; }
+.mode-btn.new::after {
+  content: ''; position: absolute; top: 6px; right: 6px; width: 7px; height: 7px;
+  border-radius: 50%; background: var(--accent-2, #9d8cff); box-shadow: 0 0 0 2px var(--panel);
+}
 
 /* ===== Chips ===== */
 .chips {
@@ -705,7 +711,8 @@ mark, .hl {
 
 /* деление окна 50/50: слева ответы, справа живое видео отслеживаемой вкладки */
 .suff-split { flex: 1; min-height: 0; display: flex; }
-.suff-split > #results { flex: 1; min-width: 0; }
+/* дерево ответов живёт отдельно от #results, поэтому его не сносит перерисовка карточек */
+.suff-split > #results, .suff-split > #suff-tree { flex: 1; min-width: 0; }
 .suff-video-wrap { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); background: #000; }
 .suff-video-wrap[hidden] { display: none; }
 .suff-video-lbl { flex: none; font-size: 12px; color: var(--text-mut); padding: 6px 12px; background: var(--bg-2); border-bottom: 1px solid var(--border); }

@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#0c0d10">
   <title>Шпаргалка PHP · собес</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c6cff'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'%3E%3C?%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=88">
+  <link rel="stylesheet" href="/styles.css?v=93">
 </head>
 <body>
   <div id="app">
@@ -71,6 +71,9 @@
         <div id="counter" class="counter"></div>
         <div id="suff-split" class="suff-split">
           <section id="results" class="results"></section>
+          <section id="suff-tree" class="results" hidden>
+            <div id="suff-hint" class="suff-hint">жду вопрос собеседника — ответы копятся здесь и не пропадают</div>
+          </section>
           <aside id="suff-video-wrap" class="suff-video-wrap" hidden>
             <div class="suff-video-lbl">📺 отслеживаемая вкладка</div>
             <video id="suff-video" class="suff-video" autoplay muted playsinline></video>
@@ -126,8 +129,8 @@
     </div>
   </div>
 
-  <script src="/api.js?v=88"></script>
-  <script src="/search.js?v=88"></script>
-  <script src="/app.js?v=88"></script>
+  <script src="/api.js?v=93"></script>
+  <script src="/search.js?v=93"></script>
+  <script src="/app.js?v=93"></script>
 </body>
 </html>

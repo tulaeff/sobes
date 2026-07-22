@@ -94,6 +94,7 @@
   var els = {
     q: document.getElementById('q'), clear: document.getElementById('clear'),
     results: document.getElementById('results'), cats: document.getElementById('cats'),
+    suffTree: document.getElementById('suff-tree'), suffHint: document.getElementById('suff-hint'),
     counter: document.getElementById('counter'), empty: document.getElementById('empty'),
     stat: document.getElementById('stat-line'), unpinAll: document.getElementById('unpinAll'),
     modal: document.getElementById('modal'), modalTitle: document.getElementById('modal-title'),
@@ -237,9 +238,15 @@
     var list = engine.run(state.query, state.cat);
     // на главной без поиска — только закреплённые; поиск и категории — по всем
     var pinnedOnly = !state.query && state.cat === '*';
-    if (suffMain && pinnedOnly) { updateUnpin(); suffShow(); return; } // суфлёр вместо закрепов
+    if (suffMain && pinnedOnly) {                     // суфлёр вместо закрепов
+      updateUnpin();
+      els.results.innerHTML = ''; cardEls = []; state.sel = -1;   // карточки прошлой категории не должны ловить стрелки
+      suffShow();
+      return;
+    }
     if (pinnedOnly) list = list.filter(function (it) { return it.pinned; });
 
+    els.suffTree.hidden = true; els.results.hidden = false;  // ушли в категорию/поиск: дерево прячем, но не рушим
     els.results.innerHTML = ''; cardEls = []; state.sel = -1;
     updateUnpin();
 
@@ -312,8 +319,7 @@
   var Q_PLACEHOLDER = els.q.getAttribute('placeholder') || '';
   function clearSearch() {
     els.q.value = ''; els.clear.hidden = true;
-    if (suffMain) { suffShow(); return; } // очистка ввода дерево ответов не трогает
-    state.query = ''; render();
+    state.query = ''; render();   // дерево суфлёра в своём контейнере — перерисовка его не трогает
   }
 
   var typeTimer = null;
@@ -323,7 +329,7 @@
     if (suffMain) { // в режиме суфлёра можно вписать вопрос руками — уйдёт тем же ИИ-ответом в дерево
       typeTimer = setTimeout(function () {
         typeTimer = null; var v = els.q.value.trim();
-        if (!v) { suffShow(); return; }
+        if (!v) { render(); return; }
         suffAsk(v); els.q.value = ''; els.clear.hidden = true; // спросили — освобождаем поле под следующий
       }, 700);
       return;
@@ -794,7 +800,6 @@
   };
   var suffMain = false, suffPaused = false;
   var suffThreads = [];             // темы по порядку (текущая — последняя, снизу); ответы копятся, ничего не пропадает
-  var suffLastAskedNorm = '';       // норм. текст последнего вопроса — чтобы не переспрашивать то же
   var suffAskBuf = '';              // накопитель распознанной речи до ближайшего вопроса
   // стоп-слова + разговорный мусор — чтобы из вопроса вытащить только смысловые термины
   var SUFF_STOP = {};
@@ -925,14 +930,35 @@
   }
   function suffShort(s) { s = (s || '').trim(); return s.length > 90 ? s.slice(0, 88) + '…' : s; }
 
-  // мутация #results без дёрганья: если читаешь НЕ у самого верха — компенсируем сдвиг высоты,
+  // мутация дерева без дёрганья: если читаешь НЕ у самого верха — компенсируем сдвиг высоты,
   // чтобы твой ответ остался на месте; если ты вверху — показываем новый (свежий сверху)
   function suffMutate(fn) {
-    var e = els.results;
+    var e = els.suffTree;
     var atTop = e.scrollTop <= 40;
     var oldH = e.scrollHeight;
     fn();
     if (!atTop) e.scrollTop += (e.scrollHeight - oldH);
+  }
+  // дерево на экране? в категории/поиске оно живёт, но спрятано — счётчик и скролл трогать нельзя
+  function suffViewOn() { return suffMain && !state.query && state.cat === '*'; }
+  // счётчик тем — только когда дерево видно; иначе метим тумблер точкой «пришёл ответ»
+  function suffBump() {
+    if (suffViewOn()) { els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length; return; }
+    if (suff.toggle) suff.toggle.classList.add('new');
+  }
+  // снести все ветки (сброс/выключение) — узлы уходят, стримы к ним глохнут по isConnected
+  function suffClearTree() {
+    suffThreads = [];
+    var tree = els.suffTree;
+    while (tree.lastChild) tree.removeChild(tree.lastChild);
+    tree.appendChild(els.suffHint);
+    els.suffHint.hidden = false;
+    tree.scrollTop = 0;
+  }
+  // первая ветка вытесняет плейсхолдер
+  function suffTreeAdd(el) {
+    els.suffHint.hidden = true;
+    suffMutate(function () { els.suffTree.insertBefore(el, els.suffTree.firstChild); });
   }
 
   // создать новую тему-ветку СВЕРХУ (свежий ответ — вверху списка)
@@ -945,8 +971,7 @@
     var ans = document.createElement('div'); ans.className = 'suff-topic-answers';
     el.appendChild(head); el.appendChild(ans);
     t.el = el; t.answersEl = ans;
-    if (!suffThreads.length) { els.results.innerHTML = ''; cardEls = []; state.sel = -1; } // убрать плейсхолдер
-    suffMutate(function () { els.results.insertBefore(el, els.results.firstChild); });
+    suffTreeAdd(el);
     suffThreads.unshift(t);
     return t;
   }
@@ -971,11 +996,16 @@
     return rec;
   }
   // разбить ответ на суть (до первой пустой строки) и остальное (детали/пример → под «подробнее»)
+  // Делим ответ на «сказать сейчас» и «подробнее». Маркер %%% ставит сам промпт —
+  // делить по пустой строке нельзя: модель ставит её где попало, и под спойлер уезжал почти весь ответ.
   function suffSplitAnswer(text) {
     var t = (text || '').trim();
-    var i = t.indexOf('\n\n');
-    if (i === -1) return { main: t, more: '' };
-    return { main: t.slice(0, i).trim(), more: t.slice(i + 2).trim() };
+    var i = t.indexOf('%%%');
+    if (i !== -1) return { main: t.slice(0, i).trim(), more: t.slice(i + 3).trim() };
+    // маркера нет — либо модель его не поставила, либо он ещё не достримился
+    var tail = t.match(/%{1,2}$/);                 // «%» или «%%» на конце — начало маркера, не показываем
+    if (tail) t = t.slice(0, -tail[0].length).trim();
+    return { main: t, more: '' };
   }
   function suffMoreBlock(text) {
     var wrap = document.createElement('div'); wrap.className = 'suff-more';
@@ -989,40 +1019,68 @@
   function suffTopicHistory(topic) {
     var h = [];
     (topic.qa || []).slice(-3).forEach(function (it) {
-      var a = (it.ans || '').trim();
+      var a = suffSplitAnswer(it.ans || '').main;   // в контекст — только суть: детали под спойлером модели не нужны
       if (it.q && a && a.length > 8) h.push({ q: it.q, a: a });
     });
     return h;
   }
-  // подсказки суфлёра — накопленное дерево в #results (ничего не затираем, если ветки уже есть)
+  // показать накопленное дерево: свой контейнер вместо #results, ветки при этом не трогаем
   function suffShow() {
     els.empty.hidden = true;
-    if (!suffThreads.length) {
-      els.counter.textContent = '🎧 Суфлёр слушает…';
-      els.results.innerHTML = '<div class="suff-hint">жду вопрос собеседника — ответы копятся здесь и не пропадают</div>';
-      cardEls = []; state.sel = -1;
-    } else {
-      els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length;
-    }
+    els.results.hidden = true;
+    els.suffTree.hidden = false;
+    els.suffHint.hidden = suffThreads.length > 0;
+    if (suff.toggle) suff.toggle.classList.remove('new');
+    els.counter.textContent = suffThreads.length
+      ? '🎧 тем в эфире: ' + suffThreads.length
+      : '🎧 Суфлёр слушает…';
   }
 
-  // ---- AI-суфлёр: вопрос собеседника → ответ Claude (без карточек, ИИ формирует сам) ----
+  // карточки под вопрос — как справка модели. Ничего не нашлось → пустой массив, ИИ отвечает сам
+  function suffCards(phrase) {
+    if (!engine.retrieve) return [];
+    var found;
+    try { found = engine.retrieve(phrase, 3); } catch (e) { return []; }
+    return (found || []).map(function (it, i) {
+      var c = { q: it.q, a: cut(it.a, 700) };
+      if (i === 0 && it.detail) c.detail = cut(it.detail, 600);   // подробности только у самой близкой
+      return c;
+    });
+  }
+  function cut(s, n) { s = (s || '').trim(); return s.length > n ? s.slice(0, n) + '…' : s; }
+
+  // Кольцо недавних вопросов: дубль отсекаем, но через полминуты тот же вопрос спросить можно —
+  // интервьюер вполне может вернуться к теме или попросить повторить.
+  var suffRecent = [];
+  var SUFF_DUP_WINDOW = 40000;
+  function suffAskedRecently(pn) {
+    var now = Date.now();
+    suffRecent = suffRecent.filter(function (r) { return now - r.t < SUFF_DUP_WINDOW; });
+    for (var i = 0; i < suffRecent.length; i++) {
+      if (engine.similar(suffRecent[i].pn, pn)) { suffRecent[i].t = now; return true; }
+    }
+    suffRecent.push({ pn: pn, t: now });
+    if (suffRecent.length > 8) suffRecent.shift();
+    return false;
+  }
+
+  // ---- AI-суфлёр: вопрос собеседника → ответ Claude (карточки подмешиваются, если нашлись) ----
   function suffAsk(phrase) {
     var p = (phrase || '').replace(/\s+/g, ' ').trim();
-    if (!suffMain || p.length < 6) return;
+    if (!suffMain || p.length < 3) return;         // «ООП?», «CAP?», «GIL?» — короткие, но настоящие вопросы
     var pn = engine.norm(p);
-    if (!pn || pn === suffLastAskedNorm) return;   // не переспрашиваем то же
-    suffLastAskedNorm = pn;
+    if (!pn || suffAskedRecently(pn)) return;      // распознавание любит повторить фразу с мелкой разницей
     var sig = suffTopicSig(p);
     var topic = suffRouteTopic(p, sig);
     var history = suffTopicHistory(topic);         // контекст темы собираем ДО добавления текущего вопроса
     var rec = suffAddQA(topic, p);
     var body = rec.aEl;
-    els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length;
+    suffBump();
     var acc = '';
-    api.askStream(p, [], function (chunk) {        // [] карточек — отвечает сам ИИ; history — контекст уточнений
+    api.askStream(p, suffCards(p), function (chunk) {   // карточки — справка (пусто = ИИ сам); history — контекст уточнений
       if (!body.isConnected) return;
       acc += chunk;
+      rec.ans = acc;    // пишем на каждом чанке: уточнение часто прилетает ДО конца ответа и должно видеть контекст
       suffMutate(function () { body.textContent = suffSplitAnswer(acc).main; });   // пока стримится — только суть
     }, history).then(function () {
       if (!body.isConnected) return;
@@ -1047,8 +1105,7 @@
     var ans = document.createElement('div'); ans.className = 'suff-topic-answers';
     el.appendChild(head); el.appendChild(ans);
     t.el = el; t.answersEl = ans;
-    if (!suffThreads.length) { els.results.innerHTML = ''; cardEls = []; state.sel = -1; }
-    suffMutate(function () { els.results.insertBefore(el, els.results.firstChild); });
+    suffTreeAdd(el);
     suffThreads.unshift(t);
     var qa = document.createElement('div'); qa.className = 'suff-qa';
     var img = document.createElement('img'); img.className = 'suff-shot-img'; img.src = dataUrl; img.alt = 'скрин вкладки';
@@ -1056,7 +1113,7 @@
     a.innerHTML = '<span class="suff-ai-wait">🤖 смотрю на скрин…</span>';
     qa.appendChild(img); qa.appendChild(a);
     suffMutate(function () { ans.appendChild(qa); });
-    els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length;
+    suffBump();
     return a;
   }
   function suffAskShot() {
@@ -1108,11 +1165,47 @@
     suff.trans.scrollTop = suff.trans.scrollHeight;
   }
 
+  // Распознавание Chrome обрывается само (тишина, сеть, внутренние лимиты) — его надо поднимать.
+  // Раньше рестарт был через пустой catch: объект умирал молча, а статус продолжал показывать «слушаю».
+  var suffRecAlive = false, suffRecFails = 0, suffRestartTimer = null, suffWatchTimer = null, suffLastEventAt = 0;
+  var SUFF_BACKOFF = [0, 300, 800, 2000, 5000];
+
+  function suffRestartRec(why) {
+    if (!suffOn || suffPaused || suffRestartTimer) return;
+    var wait = SUFF_BACKOFF[Math.min(suffRecFails, SUFF_BACKOFF.length - 1)];
+    if (suffRecFails >= 6) {
+      suffSetStatus('распознавание не поднимается — впиши вопрос вручную', 'err');
+      return;
+    }
+    if (suffRecFails > 0) suffSetStatus('распознавание сорвалось (' + why + '), поднимаю…', 'err');
+    suffRestartTimer = setTimeout(function () {
+      suffRestartTimer = null;
+      if (suffOn && !suffPaused) suffStartRec();
+    }, wait);
+  }
+
+  function suffStopRec() {
+    if (suffRestartTimer) { clearTimeout(suffRestartTimer); suffRestartTimer = null; }
+    if (suffWatchTimer) { clearInterval(suffWatchTimer); suffWatchTimer = null; }
+    suffRecAlive = false;
+    if (suffRec) { suffRec.onend = null; try { suffRec.stop(); } catch (e) {} suffRec = null; }
+  }
+
   function suffStartRec() {
     if (!SR) { suffSetStatus('этот браузер не умеет распознавание речи (нужен Chrome)', 'err'); return; }
+    if (suffRec) { suffRec.onend = null; try { suffRec.stop(); } catch (e) {} }   // старый объект не должен дёргать рестарт
     suffRec = new SR();
     suffRec.lang = 'ru-RU'; suffRec.continuous = true; suffRec.interimResults = true;
+    var startedAt = Date.now();
+    suffLastEventAt = startedAt;
+
+    suffRec.onstart = function () {            // статус только по факту старта, а не авансом
+      suffRecAlive = true; suffRecFails = 0; suffLastEventAt = Date.now();
+      suffSetStatus('слушаю собеседника…', 'live');
+    };
+    suffRec.onaudiostart = function () { suffLastEventAt = Date.now(); };
     suffRec.onresult = function (e) {
+      suffLastEventAt = Date.now();
       var interim = '', fin = '';
       for (var i = e.resultIndex; i < e.results.length; i++) {
         var res = e.results[i];
@@ -1122,12 +1215,40 @@
       suffShowTrans(interim);
     };
     suffRec.onerror = function (e) {
-      if (e.error === 'no-speech' || e.error === 'aborted') return;
+      if (e.error === 'no-speech' || e.error === 'aborted') return;   // штатные обрывы, поднимет onend
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        suffRecFails = 99;                                            // разрешение отозвали — рестартить бессмысленно
+        suffSetStatus('доступ к распознаванию закрыт — впиши вопрос вручную', 'err');
+        return;
+      }
       suffSetStatus('ошибка распознавания: ' + e.error, 'err');
     };
-    suffRec.onend = function () { if (suffOn && !suffPaused) { try { suffRec.start(suffTrack); } catch (err) {} } }; // авто-рестарт (не на паузе)
-    try { suffRec.start(suffTrack); }
-    catch (err) { suffSetStatus('этот Chrome не подаёт звук вкладки в распознавание (нужен Chrome 135+)', 'err'); }
+    suffRec.onend = function () {
+      suffRecAlive = false;
+      // сорвалось сразу после старта — считаем неудачей и разводим попытки во времени
+      if (Date.now() - startedAt < 1000) suffRecFails++; else suffRecFails = 0;
+      suffRestartRec('обрыв');
+    };
+
+    try {
+      suffRec.start(suffTrack);
+      suffSetStatus('подключаюсь к звуку вкладки…');
+    } catch (err) {
+      suffRecAlive = false; suffRecFails++;
+      if (suffRecFails === 1) suffSetStatus('этот Chrome не подаёт звук вкладки в распознавание (нужен Chrome 135+)', 'err');
+      suffRestartRec('start не прошёл');
+      return;
+    }
+
+    if (!suffWatchTimer) {
+      suffWatchTimer = setInterval(function () {
+        if (!suffOn || suffPaused) return;
+        // объект жив, но событий нет минуту — Chrome иногда «залипает» без onend; пересоздаём
+        if (suffRecAlive && Date.now() - suffLastEventAt > 60000) { suffRecFails = 0; suffStartRec(); return; }
+        // объект мёртв, а рестарт не запланирован — значит onend не пришёл вовсе
+        if (!suffRecAlive && !suffRestartTimer) suffRestartRec('тишина');
+      }, 5000);
+    }
   }
 
   function suffHideVideo() {
@@ -1136,7 +1257,7 @@
   }
   function suffCaptureStop() { // остановить только захват (аудио+видео), режим суфлёра не трогаем
     suffOn = false;
-    if (suffRec) { try { suffRec.stop(); } catch (e) {} suffRec = null; }
+    suffStopRec();
     if (suffStream) { suffStream.getTracks().forEach(function (t) { t.stop(); }); suffStream = null; }
     suffTrack = null;
     suffHideVideo();
@@ -1151,13 +1272,13 @@
     if (!suffMain) return;
     if (suffPaused) {                       // продолжить
       suffPaused = false; suffUpdatePauseBtn();
-      if (suffTrack) { suffStartRec(); suffSetStatus('слушаю собеседника…', 'live'); }
+      if (suffTrack) { suffRecFails = 0; suffStartRec(); }
       else suffCapture();
     } else {                                // пауза
       suffPaused = true; suffUpdatePauseBtn();
       if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
       suffAskBuf = '';
-      if (suffRec) { suffRec.onend = null; try { suffRec.stop(); } catch (e) {} suffRec = null; }
+      suffStopRec();
       suffSetStatus('пауза — не слушаю');
     }
   }
@@ -1166,7 +1287,7 @@
     if (!suffMain) return;
     if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
     // «чистый лист»: и контент, и контекст для ИИ (history строится из topic.qa — уходит вместе с темами)
-    suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
+    suffClearTree(); suffAskBuf = ''; suffRecent = [];
     suffFinal = '';                                   // и видимый транскрипт тоже
     if (suff.trans) suff.trans.innerHTML = '';
     suffShow();   // тем нет → плейсхолдер, чистый экран под новый вопрос
@@ -1175,8 +1296,8 @@
     suffCaptureStop();
     suffMain = false; suffPaused = false; suffUpdatePauseBtn();
     if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
-    suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
-    if (suff.toggle) suff.toggle.classList.remove('on');
+    suffClearTree(); suffAskBuf = ''; suffRecent = [];
+    if (suff.toggle) { suff.toggle.classList.remove('on'); suff.toggle.classList.remove('new'); }
     if (suff.bar) suff.bar.hidden = true;
     els.q.value = ''; state.query = ''; els.clear.hidden = true;
     els.q.setAttribute('placeholder', Q_PLACEHOLDER);
@@ -1190,8 +1311,8 @@
     if (suff.bar) suff.bar.hidden = false;
     els.q.value = ''; state.query = ''; els.clear.hidden = true;
     els.q.setAttribute('placeholder', '🎧 вопрос собеседника — или впиши сам…');
-    suffThreads = []; suffAskBuf = ''; suffLastAskedNorm = '';
-    suffShow();
+    suffClearTree(); suffAskBuf = ''; suffRecent = [];
+    setCat('*');   // включились из категории — уводим на главную, иначе дерева не видно (setCat сам зовёт render→suffShow)
     suffCapture();
   }
   function suffCapture() {
@@ -1208,14 +1329,19 @@
         if (suff.videoWrap) suff.videoWrap.hidden = false;
       }
       suffTrack.onended = function () { suffCaptureStop(); suffSetStatus('захват остановлен — впиши вручную'); };
-      suffSetStatus('слушаю собеседника…', 'live');
+      suffRecFails = 0;
       suffStartRec();
     }).catch(function (err) {
       suffSetStatus(err && err.name === 'NotAllowedError' ? 'захват отменён — можно вписать вручную' : 'захват не удался — впиши вручную', 'err');
     });
   }
 
-  if (suff.toggle) suff.toggle.addEventListener('click', function () { if (suffMain) suffStop(); else suffEnter(); });
+  // из категории/поиска тумблер сперва возвращает к дереву — выключать суфлёр одним кликом отсюда опасно
+  if (suff.toggle) suff.toggle.addEventListener('click', function () {
+    if (!suffMain) { suffEnter(); return; }
+    if (!suffViewOn()) { els.q.value = ''; els.clear.hidden = true; state.query = ''; setCat('*'); return; }
+    suffStop();
+  });
   if (suff.pause) suff.pause.addEventListener('click', suffPauseToggle);
   if (suff.reset) suff.reset.addEventListener('click', suffReset);
   if (suff.shot) suff.shot.addEventListener('click', suffAskShot);

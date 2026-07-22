@@ -12,4 +12,7 @@ RUN apk add --no-cache postgresql-dev \
 RUN docker-php-ext-install opcache
 COPY opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
+# пул под стриминг: воркер занят всё время ответа суфлёра
+COPY pool.conf /usr/local/etc/php-fpm.d/zz-sobes.conf
+
 WORKDIR /var/www/api

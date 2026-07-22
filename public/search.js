@@ -177,6 +177,49 @@
     return res.map(function (r) { return r[0]; });
   }
 
+  // служебные слова живой речи — в ретриве не значат ничего
+  var RET_STOP = {};
+  ('что как какой какая какие каких чем чему где когда почему зачем кто кого это этот эта эти такое такой ли же бы для при про над под без если или но то так там тут вот ещё еще уже только очень вообще кстати вы ты мне нам мы они она оно есть быть был была были будет надо нужно можно может можешь давай скажи расскажи объясни знаешь понимаешь думаешь считаешь свой своя свои твой твоя себе себя тебе тебя наш наше а и в на с по из от до за об у не ни да нет ок хорошо ладно понятно дальше далее вопрос ответ пример примеры разница отличие отличается работает делать сделать использовать используется применяется бывает значит просто именно вообще-то допустим например скажем '
+   + 'опыт стаж работа работы работал работать сколько лет год года решал решать решаешь решение проблема проблему проблемы задача задачу задачи разработке разработка компания команда проект проекте' )
+    .split(/\s+/).forEach(function (w) { RET_STOP[w] = 1; });
+
+  // ретрив для суфлёра: OR по значимым словам с ранжированием.
+  // run() тут не годится — он требует AND по всем термам, и «расскажи про транзакции» даёт пусто.
+  // Пусто вернуть НЕ страшно: без карточек модель отвечает своими знаниями.
+  function retrieve(query, limit) {
+    var pool = SOBES._items || [];
+    if (!pool.length) return [];
+    var ts = terms(query).filter(function (t) { return t.length >= 3 && !RET_STOP[t]; });
+    if (!ts.length) return [];
+    if (ts.length > 8) ts = ts.slice(0, 8);
+
+    var cands = ts.map(candsFor);
+    var tls = ts.map(translit);
+    // одного совпавшего слова мало, когда значимых слов несколько: «опыт работы» иначе цепляет «как работают ретраи»
+    var need = ts.length >= 2 ? 2 : 1;
+    var res = [], i, j, it, sum, best, hits, sc;
+
+    for (i = 0; i < pool.length; i++) {
+      it = pool[i]; sum = 0; best = 0; hits = 0;
+      for (j = 0; j < ts.length; j++) {
+        sc = scoreTerm(it, ts[j], cands[j], tls[j]);
+        if (sc < 0) continue;                 // терм не найден — просто пропускаем, не отбрасываем карточку
+        sum += sc; hits++;
+        if (sc > best) best = sc;
+      }
+      if (hits < need) continue;
+      // попадание в вопрос/теги карточки, либо уверенная сумма по телу
+      if (best >= 7 || sum >= 12) res.push([it, sum + (it.pinned ? 4 : 0) + (it.weight || 0) * 0.03]);
+    }
+    if (!res.length) return [];
+
+    res.sort(function (a, b) { return b[1] - a[1]; });
+    var top = res[0][1];
+    return res.filter(function (r) { return r[1] >= top * 0.45; })
+              .slice(0, limit || 3)
+              .map(function (r) { return r[0]; });
+  }
+
   // список строк для подсветки совпадений (терм + основа + раскладка)
   function highlightList(query) {
     var out = [];
@@ -188,9 +231,20 @@
     return out;
   }
 
+  // почти одно и то же? Распознавание любит выдать одну фразу дважды с мелкой разницей
+  function similar(a, b) {
+    a = norm(a || ''); b = norm(b || '');
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var max = Math.max(a.length, b.length);
+    // на коротких строках 20% — это меньше символа, поэтому один символ разницы прощаем всегда («ооп» и «ооп?»)
+    if (Math.abs(a.length - b.length) > Math.max(1, max * 0.2)) return false;
+    return levLE(a, b, Math.max(1, Math.round(max * 0.15)));
+  }
+
   SOBES.search = {
-    prepare: prepare, reindex: reindex, run: run,
-    terms: terms, highlightList: highlightList,
+    prepare: prepare, reindex: reindex, run: run, retrieve: retrieve,
+    terms: terms, highlightList: highlightList, similar: similar,
     norm: norm, escRe: escRe
   };
 })();

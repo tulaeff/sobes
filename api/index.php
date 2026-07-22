@@ -4,10 +4,30 @@ declare(strict_types=1);
 header('Content-Type: application/json; charset=utf-8');
 
 const CACHE_KEY = 'sobes:cards';
+// Запросы к Anthropic идут через локальный nginx (docker/site.conf, порт 8081): он держит keepalive-пул,
+// поэтому TCP+TLS (350-450мс) не платятся на каждом вопросе. Прокси лёг — код сам уходит на прямой адрес.
+const ANTHROPIC_URL = 'http://sobes-web:8081/anthropic/v1/messages';
+const ANTHROPIC_URL_DIRECT = 'https://api.anthropic.com/v1/messages';
 // модель AI-суфлёра. Быстрая/дешёвая — haiku (для живого суфлёра). Умнее/медленнее: claude-sonnet-5, claude-opus-4-8.
 const ASK_MODEL = 'claude-haiku-4-5';
 // модель разбора скрина (vision): sonnet-5 — сильна по коду; можно claude-opus-4-8 для сложных задач.
 const VISION_MODEL = 'claude-sonnet-5';
+
+// Вопрос приходит из распознавания речи (ru-RU), английские термины оно ломает под созвучные русские слова.
+// Даём модели примеры поломок и канонический словарь стека, чтобы она восстанавливала смысл сама.
+const ASR_HINT = "\n\nВАЖНО ПРО ВХОД: вопрос — это сырая расшифровка речи, распознавание русское, и английские термины оно коверкает под похожие русские слова. "
+    . "Реальные поломки: «ларавель жопа»=Laravel jobs, «оп»=ООП, «кофта»=Kafka, «губер нет тест»=Kubernetes, «редис»=Redis, «постгрес»=PostgreSQL, «майскл»=MySQL, "
+    . "«кролик»/«раббит»=RabbitMQ, «элоквент»=Eloquent, «композер»=Composer, «клоужер»=closure, «мидлвар»=middleware, «опкеш»=OPcache, «дедлок»=deadlock, "
+    . "«джойн»=join, «аутбокс»=outbox, «хендлер»=handler, «воркер»=worker, «ретрай»=retry, «неймспейс»=namespace, «джоба»/«жоба»=job, «асид»=ACID, «оауф»=OAuth, «корс»=CORS.\n"
+    . "Кандидат — PHP-разработчик, вопросы почти всегда про: PHP, Laravel, Eloquent, Symfony, Doctrine, Composer, PSR, PHPUnit, OPcache, "
+    . "PostgreSQL, MySQL, Redis, Memcached, Elasticsearch, RabbitMQ, Kafka, очереди, джобы, воркеры, "
+    . "Docker, Kubernetes, nginx, Linux, Git, CI/CD, REST, GraphQL, gRPC, protobuf, WebSocket, webhook, JWT, OAuth, CORS, HTTP, "
+    . "ООП, SOLID, DDD, CQRS, event sourcing, saga, outbox, идемпотентность, ACID, MVCC, deadlock, транзакции, уровни изоляции, индексы, B-tree, "
+    . "шардинг, репликация, партиционирование, N+1, race condition, rate limit, backoff, retry, timeout, at-least-once, exactly-once, "
+    . "DI, IoC, middleware, namespace, autoload, trait, closure, generator, yield, TDD, моки, микросервисы, монолит, финтех и платежи, "
+    . "JavaScript, TypeScript, Vue, Node.js.\n"
+    . "Восстанавливай искажённый термин по смыслу и контексту разговора и отвечай уже по восстановленному вопросу — НЕ переспрашивай и не упоминай, что текст был искажён. "
+    . "Но не выдумывай термин там, где его нет: если фраза осмысленна и без правки, понимай её буквально.";
 
 // ---------- подключения ----------
 function db(): PDO {
@@ -74,37 +94,51 @@ function anthropicStream(string $payload, string $key): void {
     while (ob_get_level() > 0) { ob_end_flush(); }
 
     $buf = '';
-    $ch = curl_init('https://api.anthropic.com/v1/messages');
-    curl_setopt_array($ch, [
-        CURLOPT_POST       => true,
-        CURLOPT_POSTFIELDS => $payload,
-        CURLOPT_TIMEOUT    => 90,
-        CURLOPT_HTTPHEADER => [
-            'content-type: application/json',
-            'x-api-key: ' . $key,
-            'anthropic-version: 2023-06-01',
-        ],
-        CURLOPT_WRITEFUNCTION => function ($c, $data) use (&$buf) {
-            $buf .= $data;
-            while (($nl = strpos($buf, "\n")) !== false) {
-                $line = trim(substr($buf, 0, $nl));
-                $buf = substr($buf, $nl + 1);
-                if ($line === '' || strncmp($line, 'data:', 5) !== 0) continue;
-                $ev = json_decode(trim(substr($line, 5)), true);
-                if (!is_array($ev)) continue;
-                if (($ev['type'] ?? '') === 'content_block_delta' && ($ev['delta']['type'] ?? '') === 'text_delta') {
-                    echo $ev['delta']['text']; flush();
-                } elseif (($ev['type'] ?? '') === 'error') {
-                    echo "\n[ошибка Anthropic: " . ($ev['error']['message'] ?? '?') . ']'; flush();
-                }
+    $sent = false;                       // отдали ли клиенту хоть кусок текста — после этого ретраить уже нельзя
+    $write = function ($c, $data) use (&$buf, &$sent) {
+        $buf .= $data;
+        while (($nl = strpos($buf, "\n")) !== false) {
+            $line = trim(substr($buf, 0, $nl));
+            $buf = substr($buf, $nl + 1);
+            if ($line === '' || strncmp($line, 'data:', 5) !== 0) continue;
+            $ev = json_decode(trim(substr($line, 5)), true);
+            if (!is_array($ev)) continue;
+            if (($ev['type'] ?? '') === 'content_block_delta' && ($ev['delta']['type'] ?? '') === 'text_delta') {
+                echo $ev['delta']['text']; $sent = true; flush();
+            } elseif (($ev['type'] ?? '') === 'error') {
+                echo "\n[ошибка Anthropic: " . ($ev['error']['message'] ?? '?') . ']'; $sent = true; flush();
             }
-            return strlen($data);
-        },
-    ]);
-    curl_exec($ch);
-    $code = (int)curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $curlErr = curl_error($ch);
-    curl_close($ch);
+        }
+        return strlen($data);
+    };
+    $run = function (string $url) use ($payload, $key, $write, &$buf) {
+        $buf = '';
+        $ch = curl_init($url);
+        curl_setopt_array($ch, [
+            CURLOPT_POST       => true,
+            CURLOPT_POSTFIELDS => $payload,
+            CURLOPT_TIMEOUT    => 90,
+            CURLOPT_CONNECTTIMEOUT => 5,
+            CURLOPT_HTTPHEADER => [
+                'content-type: application/json',
+                'x-api-key: ' . $key,
+                'anthropic-version: 2023-06-01',
+            ],
+            CURLOPT_WRITEFUNCTION => $write,
+        ]);
+        curl_exec($ch);
+        $r = [(int)curl_getinfo($ch, CURLINFO_HTTP_CODE), curl_error($ch), curl_errno($ch)];
+        curl_close($ch);
+        return $r;
+    };
+
+    [$code, $curlErr, $errno] = $run(ANTHROPIC_URL);
+    // локальный прокси не поднялся/лёг — уходим напрямую, но только пока клиенту ничего не ушло
+    $connFail = in_array($errno, [CURLE_COULDNT_CONNECT, CURLE_COULDNT_RESOLVE_HOST, CURLE_GOT_NOTHING, CURLE_RECV_ERROR, CURLE_SEND_ERROR], true);
+    if (!$sent && ($connFail || $code === 502 || $code === 504)) {
+        error_log('sobes: keepalive-прокси недоступен (errno=' . $errno . ', code=' . $code . '), иду напрямую');
+        [$code, $curlErr, $errno] = $run(ANTHROPIC_URL_DIRECT);
+    }
     // ошибка ДО стрима (напр. 401): тело — обычный JSON, а не SSE — оно осталось в $buf
     if ($code >= 400) {
         $e = json_decode($buf, true);
@@ -151,6 +185,39 @@ function buildPayload(): string {
         JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
+// профиль кандидата для суфлёра: кто он, где работал, показательная задача.
+// Тексты в settings написаны под конкретную вакансию («ваш продукт»), поэтому в промпте это оговорено.
+function candidateProfile(): string {
+    static $cached = null;
+    if ($cached !== null) return $cached;
+    $parts = [];
+    try {
+        $rows = db()->query("SELECT key, value FROM settings WHERE key IN ('self','jobs','task')")->fetchAll();
+    } catch (Throwable $e) {
+        return $cached = '';
+    }
+    $titles = ['self' => 'О себе', 'jobs' => 'Места работы', 'task' => 'Показательная задача из опыта'];
+    $order  = ['self', 'jobs', 'task'];
+    $byKey  = [];
+    foreach ($rows as $r) {
+        $v = json_decode($r['value'], true);
+        $body = trim((string)($v['body'] ?? ''));
+        if ($body !== '') $byKey[$r['key']] = mb_substr($body, 0, 1400);
+    }
+    foreach ($order as $k) {
+        if (isset($byKey[$k])) $parts[] = '## ' . $titles[$k] . "\n" . $byKey[$k];
+    }
+    if (!$parts) return $cached = '';
+
+    return $cached = "\n\nПРОФИЛЬ КАНДИДАТА, за которого ты суфлируешь (это ЕГО факты, не твои):\n"
+        . implode("\n\n", $parts)
+        . "\n\nОтвечай ОТ ЕГО ЛИЦА, первым лицом. На вопросы про него самого — «расскажи о себе», «какой у тебя опыт», "
+        . "«самая сложная задача», «почему ушёл», «чем занимался на прошлом месте» — НИКОГДА не отказывайся и не пиши, что ты ассистент: "
+        . "бери факты отсюда и складывай готовый устный ответ. Технические вопросы тоже подкрепляй его реальными проектами, если к месту. "
+        . "Фактов биографии, которых здесь нет, не выдумывай — если чего-то не хватает, дай каркас и пометь квадратными скобками, что подставить. "
+        . "Тексты выше писались под конкретную вакансию, поэтому обороты вроде «ваш продукт» и «ваш e-commerce» игнорируй, бери только сами факты.";
+}
+
 // ---------- роутинг ----------
 function body(): array {
     $raw = file_get_contents('php://input');
@@ -171,6 +238,20 @@ $path = rtrim($path, '/');
 if ($path === '') $path = '/';
 
 try {
+    // GET /sse-test — диагностика буферизации: 5 чанков с паузой, без обращения к Anthropic
+    if ($method === 'GET' && $path === '/sse-test') {
+        header('Content-Type: text/event-stream; charset=utf-8');
+        header('X-Accel-Buffering: no');
+        header('Cache-Control: no-cache');
+        while (ob_get_level() > 0) { ob_end_flush(); }
+        for ($i = 1; $i <= 5; $i++) {
+            echo 'chunk ' . $i . ' t=' . round(microtime(true), 3) . "\n";
+            flush();
+            usleep(300000);
+        }
+        exit;
+    }
+
     // GET /cards — все карточки (из кэша)
     if ($method === 'GET' && $path === '/cards') {
         $json = cacheGet();
@@ -189,20 +270,33 @@ try {
 
         // контекст из присланных фронтом релевантных карточек (заземление, чтобы не выдумывал)
         $ctx = '';
-        foreach (array_slice($b['cards'] ?? [], 0, 5) as $c) {
+        foreach (array_slice($b['cards'] ?? [], 0, 3) as $c) {
             if (!is_array($c)) continue;
             $ctx .= '### ' . trim((string)($c['q'] ?? '')) . "\n" . trim((string)($c['a'] ?? ''));
             if (!empty($c['detail'])) $ctx .= "\n" . trim((string)$c['detail']);
             $ctx .= "\n\n";
         }
 
-        $system = 'Ты — суфлёр на техническом собеседовании, помогаешь разработчику пройти собеседование. '
-            . 'Собеседник задаёт вопросы — на каждый дай ответ, который кандидат скажет вслух. По-русски, живо, без воды и без длинных markdown-заголовков. '
-            . 'ФОРМАТ: сначала СУТЬ — 1-2 коротких предложения, готовых сказать сразу. '
-            . 'Если есть что добавить (детали, нюансы, короткий пример кода) — дай это ПОСЛЕ ПУСТОЙ СТРОКИ отдельным блоком. Если добавлять нечего — только суть, без пустой строки. '
+        $system = 'Ты — суфлёр на техническом собеседовании. Кандидат ЧИТАЕТ твой ответ боковым зрением, продолжая говорить в камеру. '
+            . "Поэтому пиши так, чтобы верх ответа считывался за 2-3 секунды.\n\n"
+            . "ФОРМАТ, строго:\n"
+            . "1. ПЕРВАЯ СТРОКА — одна фраза, которую кандидат произносит вслух прямо сейчас. Максимум 20 слов, без вводных, сразу по существу.\n"
+            . "2. Дальше 2-4 буллета «- », каждый до 12 слов: опорные пункты, чтобы развить мысль своими словами.\n"
+            . "3. Потом отдельной строкой маркер: %%%\n"
+            . "4. После маркера — детали, нюансы, пример кода, подводные камни. Здесь можно развернуться.\n\n"
+            . "Если добавить после маркера нечего — заканчивай на буллетах, маркер тогда не нужен. "
+            . "Никаких вступлений вроде «конечно» и «давай разберём», никаких markdown-заголовков. По-русски, живым языком.\n\n"
             . 'Если вопрос — уточнение к уже обсуждённому в этой беседе (например «а почему?», «а если...», «они» — это про предыдущую тему), понимай его В КОНТЕКСТЕ прошлых реплик и НЕ переспрашивай. '
-            . 'Отвечай по делу; не выдумывай факты — если не уверен, так и скажи. Не отклоняйся от темы IT!';
-        if ($ctx !== '') $system .= "\n\nСправка (если релевантна вопросу):\n" . $ctx;
+            . 'Не выдумывай факты — если не уверен, так и скажи. Не отклоняйся от темы IT!'
+            . ASR_HINT
+            . candidateProfile();
+        // карточки подбираются автоматом по словам вопроса, поэтому могут быть и мимо — модель решает сама
+        if ($ctx !== '') {
+            $system .= "\n\nВЫДЕРЖКИ ИЗ ШПАРГАЛКИ КАНДИДАТА (подобраны автоматически по словам вопроса):\n" . $ctx
+                . "Это подсказка, а не источник истины. По теме — опирайся на них и держись их формулировок, кандидат учил именно эти. "
+                . "Мимо темы или их не хватает — молча игнорируй и отвечай своими знаниями, полноценно. "
+                . "Никогда не упоминай саму шпаргалку вслух и не говори, что чего-то в ней нет.";
+        }
 
         // история этой темы (предыдущие вопрос-ответ) → многоходовый диалог, чтобы модель понимала уточнения
         $msgs = [];
@@ -218,7 +312,7 @@ try {
 
         $payload = json_encode([
             'model'      => ASK_MODEL,
-            'max_tokens' => 800,
+            'max_tokens' => 1200,
             'stream'     => true,
             'system'     => $system,
             'messages'   => $msgs,
