@@ -58,16 +58,46 @@ CREATE TABLE IF NOT EXISTS vacancies (
     link_text  TEXT NOT NULL DEFAULT '',  -- содержимое страницы по ссылке (полное описание вакансии)
     mismatches JSONB NOT NULL DEFAULT '[]', -- главные несоответствия резюме (массив строк)
     -- автоотклик
-    apply_status TEXT NOT NULL DEFAULT 'new', -- new | queued (черновик готов, ждёт одобрения) | approved (одобрен, ждёт отправки) | applied | needs_manual | skipped (юзер отказался навсегда, скрыта из UI)
+    apply_status TEXT NOT NULL DEFAULT 'new', -- new | queued (черновик готов, ждёт одобрения) | approved (одобрен, ждёт отправки) | applied | direct (нашли прямые контакты, пишем в обход площадки) | done (работа по вакансии закончена) | needs_manual | skipped (юзер отказался навсегда, скрыта из UI)
     applied_at   TIMESTAMPTZ,               -- когда откликнулись
     cover_letter TEXT NOT NULL DEFAULT '',   -- черновик сопроводительного
     apply_note   TEXT NOT NULL DEFAULT '',   -- заметка (причина ручной формы / детали отклика)
     company      TEXT NOT NULL DEFAULT '',   -- название компании-работодателя
     company_url  TEXT NOT NULL DEFAULT '',   -- найденный сайт/раздел вакансий компании (вне источника)
+    hr_contacts  JSONB NOT NULL DEFAULT '[]', -- прямые контакты нанимающей стороны: [{kind: email|tg|linkedin|phone|site, value, name, note, source}]
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (source_id, msg_id)            -- одно сообщение = одна вакансия
 );
 CREATE INDEX IF NOT EXISTS idx_vacancies_score ON vacancies(score DESC);
+
+-- записи встреч: видео вкладки + смешанный звук (микрофон + собеседники).
+-- Сам файл лежит на диске (./recordings), в БД только метаданные и текст.
+CREATE TABLE IF NOT EXISTS recordings (
+    id          SERIAL PRIMARY KEY,
+    title       TEXT NOT NULL DEFAULT '',
+    file        TEXT NOT NULL DEFAULT '',            -- имя файла в /var/www/recordings
+    mime        TEXT NOT NULL DEFAULT 'video/webm',
+    status      TEXT NOT NULL DEFAULT 'recording',   -- recording | done | failed
+    size_bytes  BIGINT NOT NULL DEFAULT 0,
+    duration_ms BIGINT NOT NULL DEFAULT 0,
+    chunks      INT NOT NULL DEFAULT 0,              -- сколько кусков дописано (по нему ловим повтор после ретрая)
+    transcript_kind TEXT NOT NULL DEFAULT 'live',    -- live (браузерное распознавание) | whisper (точная расшифровка)
+    whisper_status  TEXT NOT NULL DEFAULT '',        -- '' | queued | running | done | failed
+    whisper_note    TEXT NOT NULL DEFAULT '',        -- что пошло не так / сколько заняло
+    started_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    finished_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_recordings_started ON recordings(started_at DESC);
+
+-- расшифровка речи: реплика = строка, t_ms — смещение от старта записи (по нему перемотка плеера)
+CREATE TABLE IF NOT EXISTS recording_lines (
+    id           BIGSERIAL PRIMARY KEY,
+    recording_id INT NOT NULL REFERENCES recordings(id) ON DELETE CASCADE,
+    t_ms         BIGINT NOT NULL DEFAULT 0,
+    text         TEXT NOT NULL DEFAULT '',
+    speaker      TEXT NOT NULL DEFAULT ''            -- me | them | '' (когда говорящего не различали)
+);
+CREATE INDEX IF NOT EXISTS idx_recording_lines ON recording_lines(recording_id, t_ms);
 
 -- лог работы агента (что делал автопрогон: запуск, скан, отклики, ошибки)
 CREATE TABLE IF NOT EXISTS agent_log (

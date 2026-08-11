@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Воркер точной расшифровки записей встреч: крутится в фоне, сам подхватывает очередь.
+     Ставится в ~/Library/LaunchAgents/, стартует при входе в систему и поднимается после падения. -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sobes.whisper</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Library/Frameworks/Python.framework/Versions/3.11/bin/python3</string>
+        <string>/Users/ivangrigorov/Работа/phpStormProjects/Citrus-media/sobes.local/scripts/whisper_transcribe.py</string>
+        <string>--watch</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/ivangrigorov/Работа/phpStormProjects/Citrus-media/sobes.local</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- ffmpeg и whisper-cli стоят из brew, launchd о /usr/local/bin сам не знает -->
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>WHISPER_THREADS</key>
+        <string>12</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Nice, но НЕ ProcessType=Background: с фоновым классом macOS резал долю процессора вдвое
+         (замер: 0.39× реального времени вручную против ~1× у агента). Уступать работе он и так будет —
+         пониженный приоритет остаётся, плюс во время записи встречи воркер вообще не считает. -->
+    <key>Nice</key>
+    <integer>5</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/ivangrigorov/Library/Logs/sobes-whisper.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/ivangrigorov/Library/Logs/sobes-whisper.log</string>
+</dict>
+</plist>

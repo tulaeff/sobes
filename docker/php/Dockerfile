@@ -12,6 +12,9 @@ RUN apk add --no-cache postgresql-dev \
 RUN docker-php-ext-install opcache
 COPY opcache.ini /usr/local/etc/php/conf.d/opcache.ini
 
+# лимиты тела запроса под заливку кусков записи встречи
+COPY php.ini /usr/local/etc/php/conf.d/zz-sobes.ini
+
 # пул под стриминг: воркер занят всё время ответа суфлёра
 COPY pool.conf /usr/local/etc/php-fpm.d/zz-sobes.conf
 

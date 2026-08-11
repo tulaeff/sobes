@@ -5,35 +5,17 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
   <meta name="theme-color" content="#0c0d10">
-  <title>Шпаргалка PHP · собес</title>
+  <title>Собес</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%237c6cff'/%3E%3Ctext x='16' y='23' font-size='19' text-anchor='middle' fill='white' font-family='monospace' font-weight='bold'%3E%3C?%3C/text%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/styles.css?v=93">
+  <link rel="stylesheet" href="/styles.css?v=155">
 </head>
 <body>
   <div id="app">
-    <aside id="sidebar" aria-label="Категории">
+    <aside id="sidebar" aria-label="Навигация" hidden>
       <div class="brand">
         <span class="brand-logo">&lt;?</span>
         <div class="brand-text">
-          <b>PHP шпаргалка</b>
-          <small id="stat-line">загрузка…</small>
-        </div>
-      </div>
-      <div id="sidebar-main">
-        <div class="personal">
-          <div class="personal-head">📋 Текущая вакансия</div>
-          <button class="pbtn psec-btn" data-psec="self" type="button">👤 О себе</button>
-          <button class="pbtn psec-btn" data-psec="task" type="button">💡 Сложная задача</button>
-          <button class="pbtn psec-btn" data-psec="jobs" type="button">🏢 Места работы</button>
-          <button class="pbtn psec-btn" data-psec="ask" type="button">❓ Вопросы к ним</button>
-        </div>
-        <div class="tools">
-          <a id="openSources" class="pbtn tool" href="#monitoring">📡 Мониторинг вакансий</a>
-        </div>
-        <nav id="cats" class="cats"></nav>
-        <div class="side-foot">
-          <button id="unpinAll" class="foot-btn danger" hidden>Снять все закрепы</button>
-          <div class="foot-hints"><kbd>/</kbd> поиск · <kbd>↑</kbd><kbd>↓</kbd> навигация · <kbd>Enter</kbd> подробнее · <kbd>Esc</kbd> сброс</div>
+          <b>Собес</b>
         </div>
       </div>
       <div id="sidebar-mon" hidden>
@@ -43,44 +25,91 @@
         <div class="src-side-head">Показать</div>
         <div id="vac-filters" class="vac-filters"></div>
         <div class="src-side-head">Источники</div>
+        <button id="src-add-open" class="pbtn tool src-add-open" type="button">＋ Добавить источник</button>
         <div id="src-list" class="src-list"></div>
+      </div>
+      <div id="sidebar-rec" hidden>
+        <div class="tools">
+          <a id="backHomeRec" class="pbtn tool" href="#">← На главную</a>
+        </div>
+        <div class="src-side-head">Запись</div>
+        <div class="rec-side">
+          <button id="rec-toggle" class="rec-toggle" type="button">🎥 Начать запись</button>
+          <button id="rec-pause" class="rec-pause" type="button" hidden>⏸ Пауза</button>
+          <div id="rec-status" class="rec-status">захват вкладки: видео + звук созвона, плюс твой микрофон</div>
+          <div id="rec-mic-box" class="rec-mic-box">
+            <div class="rec-mic-head">
+              <span>🎤 микрофон</span>
+              <button id="rec-mic-refresh" class="rec-mic-refresh" type="button" title="Подобрать рабочий вход заново">↻</button>
+            </div>
+            <select id="rec-mic-dev" class="rec-mic-dev" title="Вход подбирается сам — тут можно переопределить"></select>
+            <div class="rec-level"><div id="rec-level-bar" class="rec-level-bar"></div></div>
+            <div id="rec-level-hint" class="rec-level-hint">подбираю рабочий вход…</div>
+          </div>
+          <div class="rec-mic-box">
+            <div class="rec-mic-head"><span>🎚 качество</span></div>
+            <select id="rec-qual" class="rec-mic-dev" title="Лёгкое бережёт процессор — на созвоне это заметно">
+              <option value="light">лёгкое · 720p, 12 fps</option>
+              <option value="sharp">чёткое · как на экране</option>
+            </select>
+          </div>
+        </div>
+        <div class="foot-hints">звук созвона попадёт в запись, только если в окне выбора включить «Поделиться звуком вкладки»</div>
       </div>
     </aside>
 
     <main id="main">
-      <div id="cheatsheet-view">
+      <section id="home-view" class="home">
+        <div class="home-inner">
+          <nav class="home-tiles">
+            <a class="tile" href="#suffler">
+              <span class="tile-ic">🎧</span>
+              <span class="tile-t">Суфлёр</span>
+              <span class="tile-s">подсказки по речи собеседника</span>
+            </a>
+            <a class="tile" href="#monitoring">
+              <span class="tile-ic">📡</span>
+              <span class="tile-t">Вакансии</span>
+              <span class="tile-s">мониторинг и отклики</span>
+            </a>
+            <a class="tile" href="#record">
+              <span class="tile-ic">🎥</span>
+              <span class="tile-t">Запись встречи<span id="rec-dot" class="rec-dot" hidden></span></span>
+              <span class="tile-s">видео созвона + расшифровка</span>
+            </a>
+          </nav>
+        </div>
+      </section>
+
+      <div id="suffler-view" hidden>
         <header id="topbar">
-          <div class="search-wrap">
-            <svg class="search-ic" width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><path d="m20 20-3.2-3.2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-            <input id="q" type="search" inputmode="search" autocomplete="off" autocorrect="off"
-                   spellcheck="false" placeholder="Найти ответ… (изоляция транзакций, ===, Doctrine, outbox)" aria-label="Поиск">
-            <button id="clear" class="clear" title="Очистить (Esc)" aria-label="Очистить" hidden>&times;</button>
-          </div>
-          <button id="suff-toggle" class="mode-btn" type="button" title="Суфлёр — подсказки из базы по речи собеседника (вместо закреплённых)">🎧 Суфлёр</button>
+          <a id="backHomeSuff" class="mode-btn back" href="#">← На главную</a>
+          <h1 class="page-title">🎧 Суфлёр</h1>
+          <button id="suff-toggle" class="mode-btn" type="button" title="Включить суфлёр — захват звука вкладки и подсказки по речи собеседника">🎧 Включить</button>
+          <button id="suff-log-btn" class="mode-btn suff-logbtn" type="button" title="Транскрипт сессии: сырое распознавание + правка до эталона, выгрузка .jsonl для оценки ASR" hidden>📝 транскрипт</button>
         </header>
 
         <div id="suff-bar" class="suff-bar" hidden>
           <span id="suff-status" class="suff-status">готов</span>
+          <div id="suff-level" class="suff-level" title="громкость звука из вкладки" hidden><div id="suff-level-bar" class="suff-level-bar"></div></div>
+          <span id="suff-level-warn" class="suff-level-warn" hidden>нет звука из вкладки — нужна галочка «Поделиться звуком вкладки»</span>
           <button id="suff-pause" class="suff-pause" type="button" title="Пауза — перестать слушать (потом продолжить)">⏸ пауза</button>
           <button id="suff-reset" class="suff-reset" type="button" title="Сбросить — очистить все ответы и контекст (суфлёр не выключается)">🗑 сброс</button>
           <button id="suff-shot" class="suff-shot" type="button" title="Сделать фото правой панели (вкладки) и разобрать: код, ошибки, «что выведет», задача">🖼 разобрать скрин</button>
-          <span class="suff-hintline">ответы копятся по темам и не пропадают · вопрос ловится по речи собеседника или впиши его в поиск ↑</span>
+          <input id="suff-ask" class="suff-ask" type="text" autocomplete="off" spellcheck="false"
+                 placeholder="вопрос не расслышался? впиши сам…" aria-label="Спросить вручную">
           <div id="suff-transcript" class="suff-transcript" aria-live="polite"></div>
         </div>
 
         <div id="counter" class="counter"></div>
         <div id="suff-split" class="suff-split">
-          <section id="results" class="results"></section>
-          <section id="suff-tree" class="results" hidden>
+          <section id="suff-tree" class="results">
             <div id="suff-hint" class="suff-hint">жду вопрос собеседника — ответы копятся здесь и не пропадают</div>
           </section>
           <aside id="suff-video-wrap" class="suff-video-wrap" hidden>
             <div class="suff-video-lbl">📺 отслеживаемая вкладка</div>
             <video id="suff-video" class="suff-video" autoplay muted playsinline></video>
           </aside>
-        </div>
-        <div id="empty" class="empty" hidden>
-          <b>Ничего не нашлось</b>
         </div>
       </div>
 
@@ -89,22 +118,6 @@
           <div class="mon-top">
             <h1>📡 Мониторинг вакансий</h1>
           </div>
-          <div class="src-add">
-            <div class="src-tabs">
-              <button type="button" class="src-tab active" data-kind="tg">📨 Телеграм-чат</button>
-              <button type="button" class="src-tab" data-kind="account">🌐 Аккаунт / сайт</button>
-            </div>
-            <div class="src-add-row">
-              <div id="src-fields-tg" class="src-fields">
-                <select id="src-file"></select>
-              </div>
-              <div id="src-fields-account" class="src-fields" hidden>
-                <input id="src-url" type="text" placeholder="URL (https://hh.ru/… или https://career.habr.com/…)">
-              </div>
-              <button id="src-add-btn" type="button" class="btn primary">Добавить</button>
-            </div>
-          </div>
-
           <div class="vac-head">
             <h2>Подходящие вакансии <span id="vac-count" class="vac-count"></span></h2>
             <div class="vac-actions">
@@ -116,21 +129,70 @@
         </div>
       </section>
 
+      <section id="record-view" class="mon-page" hidden>
+        <div class="mon-inner">
+          <div class="mon-top">
+            <h1>🎥 Запись встречи</h1>
+          </div>
+
+          <div id="rec-live" class="rec-live" hidden>
+            <video id="rec-preview" class="rec-preview" autoplay muted playsinline></video>
+            <div class="rec-live-side">
+              <div class="rec-live-head">
+                <span class="rec-pulse"></span>
+                <span id="rec-timer" class="rec-timer">00:00</span>
+              </div>
+              <div id="rec-live-meta" class="rec-live-meta"></div>
+              <div id="rec-live-trans" class="rec-live-trans" aria-live="polite"></div>
+            </div>
+          </div>
+
+          <div class="vac-head">
+            <h2>Записи <span id="rec-count" class="vac-count"></span></h2>
+          </div>
+          <div id="rec-list" class="rec-list"></div>
+        </div>
+      </section>
+
     </main>
+  </div>
+
+  <div id="src-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close="1"></div>
+    <div class="modal-panel" role="dialog" aria-modal="true">
+      <button class="modal-close" data-close="1" aria-label="Закрыть">&times;</button>
+      <h2>Добавить источник</h2>
+      <div class="src-add">
+        <div class="src-tabs">
+          <button type="button" class="src-tab active" data-kind="tg">📨 Телеграм-чат</button>
+          <button type="button" class="src-tab" data-kind="account">🌐 Аккаунт / сайт</button>
+        </div>
+        <div class="src-add-row">
+          <div id="src-fields-tg" class="src-fields">
+            <select id="src-file"></select>
+          </div>
+          <div id="src-fields-account" class="src-fields" hidden>
+            <input id="src-url" type="text" placeholder="URL (https://hh.ru/… или https://career.habr.com/…)">
+          </div>
+          <button id="src-add-btn" type="button" class="btn primary">Добавить</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div id="modal" class="modal" hidden>
     <div class="modal-backdrop" data-close="1"></div>
     <div class="modal-panel" role="dialog" aria-modal="true">
-      <button class="modal-edit" id="modal-edit" type="button" title="Редактировать" aria-label="Редактировать"></button>
       <button class="modal-close" data-close="1" aria-label="Закрыть">&times;</button>
       <h2 id="modal-title"></h2>
       <div id="modal-body" class="modal-body"></div>
     </div>
   </div>
 
-  <script src="/api.js?v=93"></script>
-  <script src="/search.js?v=93"></script>
-  <script src="/app.js?v=93"></script>
+  <script src="/api.js?v=155"></script>
+  <script src="/search.js?v=155"></script>
+  <script src="/app.js?v=155"></script>
+  <script src="/record.js?v=155"></script>
+  <script src="/record-ui.js?v=155"></script>
 </body>
 </html>

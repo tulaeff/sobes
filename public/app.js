@@ -1,17 +1,11 @@
-/* ===== PHP шпаргалка — UI, рендер, взаимодействие (данные из API) ===== */
+/* ===== Собес — UI: главная с плитками, суфлёр, мониторинг, запись ===== */
 (function () {
   'use strict';
   var api = window.SOBES.api;
   var engine = window.SOBES.search;
 
-  var CATS = [], ITEMS = [];
-  var CHUNK = 70;
-
-  var ICON_PIN = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.8a2 2 0 0 1-1.1 1.8l-1.8.9A2 2 0 0 0 5 15.2V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.8a2 2 0 0 0-1.1-1.8l-1.8-.9A2 2 0 0 1 15 10.8V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>';
-  var ICON_EDIT = '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
-  var ACT_TPL = document.createElement('div');
-  ACT_TPL.className = 'card-actions';
-  ACT_TPL.innerHTML = '<button class="ico pin" type="button">' + ICON_PIN + '</button><button class="ico edit" type="button">' + ICON_EDIT + '</button>';
+  // база карточек нужна суфлёру как справка модели (RAG), сами карточки в UI не показываются
+  var ITEMS = [];
 
   // --- markdown (мини) ---
   function escHtml(s) { return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
@@ -34,6 +28,10 @@
         html += '<pre class="md-code">' + highlightCode(code.join('\n')) + '</pre>';
       }
       else if (/^\s*(-{3,}|\*{3,})\s*$/.test(ln)) { flushP(); flushL(); html += '<hr>'; }
+      else if (/^\s*#{2,4}\s+\S/.test(ln)) {          // «## Заголовок» — им размечен разбор встречи
+        flushP(); flushL();
+        html += '<h3>' + mdInline(ln.replace(/^\s*#{2,4}\s+/, '')) + '</h3>';
+      }
       else if (m) { flushP(); if (!list) { html += '<ul>'; list = true; } html += '<li>' + mdInline(m[1]) + '</li>'; }
       else if (!ln.trim()) { flushL(); flushP(); }
       else { flushL(); para.push(mdInline(ln)); }
@@ -63,367 +61,59 @@
     out += escHtml(code.slice(last));
     return out;
   }
-  function ensureHl(pre) { if (pre && !pre._hl) { pre.innerHTML = highlightCode(pre._code); pre._hl = true; } }
-
-  // --- подсветка совпадений ---
-  function highlightMatches(root, ts) {
-    if (!ts.length) return;
-    var uniq = ts.filter(function (t, i) { return t && ts.indexOf(t) === i; });
-    var re = new RegExp('(' + uniq.map(engine.escRe).sort(function (a, b) { return b.length - a.length; }).join('|') + ')', 'gi');
-    var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-      acceptNode: function (n) {
-        var p = n.parentNode;
-        if (p && (p.nodeName === 'CODE' || p.nodeName === 'PRE' || (p.classList && (p.classList.contains('badge') || p.classList.contains('edited'))))) return NodeFilter.FILTER_REJECT;
-        return re.test(n.nodeValue) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
-      }
-    });
-    var nodes = [], n; while ((n = walker.nextNode())) nodes.push(n);
-    nodes.forEach(function (node) {
-      var frag = document.createDocumentFragment(), s = node.nodeValue, mm, li = 0; re.lastIndex = 0;
-      while ((mm = re.exec(s))) {
-        if (mm.index > li) frag.appendChild(document.createTextNode(s.slice(li, mm.index)));
-        var mk = document.createElement('mark'); mk.textContent = mm[0]; frag.appendChild(mk);
-        li = re.lastIndex; if (mm.index === re.lastIndex) re.lastIndex++;
-      }
-      if (li < s.length) frag.appendChild(document.createTextNode(s.slice(li)));
-      node.parentNode.replaceChild(frag, node);
-    });
-  }
 
   // --- DOM ---
   var els = {
-    q: document.getElementById('q'), clear: document.getElementById('clear'),
-    results: document.getElementById('results'), cats: document.getElementById('cats'),
     suffTree: document.getElementById('suff-tree'), suffHint: document.getElementById('suff-hint'),
-    counter: document.getElementById('counter'), empty: document.getElementById('empty'),
-    stat: document.getElementById('stat-line'), unpinAll: document.getElementById('unpinAll'),
+    counter: document.getElementById('counter'),
     modal: document.getElementById('modal'), modalTitle: document.getElementById('modal-title'),
-    modalBody: document.getElementById('modal-body'), modalEdit: document.getElementById('modal-edit')
+    modalBody: document.getElementById('modal-body')
   };
-  els.modalEdit.innerHTML = ICON_EDIT;
-  var state = { query: '', cat: '*', sel: -1 };
-  var cardEls = [];
 
-  function plural(n, one, few, many) {
-    var m10 = n % 10, m100 = n % 100;
-    if (m10 === 1 && m100 !== 11) return one;
-    if (m10 >= 2 && m10 <= 4 && (m100 < 10 || m100 >= 20)) return few;
-    return many;
-  }
-  function shortCat(t) { return (t || '').length > 18 ? t.slice(0, 17) + '…' : t; }
-
-  function buildSidebar() {
-    var counts = {}; ITEMS.forEach(function (it) { counts[it.cat] = (counts[it.cat] || 0) + 1; });
-    var html = catBtn('*', 'Все категории', ITEMS.length);
-    CATS.forEach(function (c) { html += catBtn(c.key, c.title, counts[c.key] || 0); });
-    els.cats.innerHTML = html;
-    els.stat.textContent = ITEMS.length + ' ' + plural(ITEMS.length, 'карточка', 'карточки', 'карточек') + ' · ' + CATS.length + ' тем';
-  }
-  function catBtn(key, title, n) {
-    return '<button class="cat" data-cat="' + key + '"><span class="cat-dot"></span>' +
-      '<span class="cat-name">' + escHtml(title) + '</span><span class="cat-count">' + n + '</span></button>';
-  }
-
-  function enterEdit(card, it) {
-    card.classList.add('editing'); card.innerHTML = '';
-    var w = document.createElement('div'); w.className = 'edit';
-    w.innerHTML =
-      '<label>Вопрос</label><textarea class="e-q" rows="2"></textarea>' +
-      '<label>Короткий ответ <span class="hint">видно сразу; markdown ок</span></label><textarea class="e-a" rows="3"></textarea>' +
-      '<label>Развёрнутый ответ <span class="hint">по кнопке «Подробнее»</span></label><textarea class="e-detail" rows="6"></textarea>' +
-      '<label>Код <span class="hint">необязательно</span></label><textarea class="e-code" rows="4" spellcheck="false"></textarea>' +
-      '<div class="edit-btns"><button class="btn primary" type="button">Сохранить</button><button class="btn cancel" type="button">Отмена</button>' +
-      (it.edited ? '<button class="btn ghost reset" type="button">Вернуть оригинал</button>' : '') + '</div>';
-    card.appendChild(w);
-    var eq = w.querySelector('.e-q'), ea = w.querySelector('.e-a'), ed = w.querySelector('.e-detail'), ec = w.querySelector('.e-code');
-    eq.value = it.q; ea.value = it.a; ed.value = it.detail || ''; ec.value = it.code || '';
-    eq.focus();
-    w.querySelector('.primary').onclick = function () {
-      var old = { q: it.q, a: it.a, detail: it.detail, code: it.code, edited: it.edited };
-      it.q = eq.value.trim(); it.a = ea.value; it.detail = ed.value; it.code = ec.value; it.edited = true;
-      engine.reindex(it); render();
-      api.saveEdit(it.id, { q: it.q, a: it.a, detail: it.detail, code: it.code }).catch(function () {
-        it.q = old.q; it.a = old.a; it.detail = old.detail; it.code = old.code; it.edited = old.edited;
-        engine.reindex(it); render(); alert('Не удалось сохранить правку');
-      });
-    };
-    w.querySelector('.cancel').onclick = function () { render(); };
-    var rb = w.querySelector('.reset');
-    if (rb) rb.onclick = function () {
-      api.reset(it.id).then(function (res) {
-        var c = res.card || {};
-        if (c.q != null) it.q = c.q; if (c.a != null) it.a = c.a;
-        if (c.detail != null) it.detail = c.detail; if (c.code != null) it.code = c.code;
-        if (c.tags) it.tags = c.tags;
-        it.edited = false; engine.reindex(it); render();
-      }).catch(function () { alert('Не удалось вернуть оригинал'); });
-    };
-  }
-
-  function openDetail(card) {
-    if (!card._wrap || !card._wrap.classList.contains('hide')) return;
-    card._wrap.classList.remove('hide');
-    if (card._pre) ensureHl(card._pre);
-    card._more.textContent = 'Свернуть';
-    card.classList.add('open');
-  }
-  function closeDetail(card) {
-    if (!card._wrap || card._wrap.classList.contains('hide')) return;
-    card._wrap.classList.add('hide');
-    card._more.textContent = 'Подробнее';
-    card.classList.remove('open');
-  }
-  function toggleDetail(card) {
-    if (!card._wrap) return;
-    if (card._wrap.classList.contains('hide')) openDetail(card); else closeDetail(card);
-  }
-
-  function makeCard(it, hl, withBadge) {
-    var card = document.createElement('article'); card.className = 'card'; card.dataset.id = it.id;
-    if (it.pinned) card.classList.add('pinned');
-
-    var act = ACT_TPL.cloneNode(true);
-    var pin = act.children[0], ed = act.children[1];
-    if (it.pinned) pin.classList.add('on');
-    pin.title = it.pinned ? 'Открепить' : 'Закрепить наверх';
-    ed.title = 'Редактировать';
-    pin.onclick = function (e) {
-      e.stopPropagation();
-      it.pinned = !it.pinned; render();
-      api.setPin(it.id, it.pinned).catch(function () { it.pinned = !it.pinned; render(); alert('Не удалось сохранить закреп'); });
-    };
-    ed.onclick = function (e) { e.stopPropagation(); enterEdit(card, it); };
-    card.appendChild(act);
-
-    var q = document.createElement('div'); q.className = 'q';
-    if (withBadge) { var b = document.createElement('span'); b.className = 'badge'; b.textContent = shortCat(it.catTitle); q.appendChild(b); }
-    if (it.edited) { var mk = document.createElement('span'); mk.className = 'edited'; mk.title = 'Изменено вами'; mk.textContent = 'ред.'; q.appendChild(mk); }
-    var qt = document.createElement('span'); qt.className = 'qtext'; qt.innerHTML = mdInline(it.q); q.appendChild(qt);
-    card.appendChild(q);
-
-    var a = document.createElement('div'); a.className = 'a'; a.innerHTML = mdBlock(it.a); card.appendChild(a);
-
-    var hasDetail = it.detail && it.detail.trim();
-    var hasCode = it.code && it.code.trim();
-    if (hasDetail || hasCode) {
-      var more = document.createElement('button'); more.className = 'more'; more.type = 'button'; more.textContent = 'Подробнее';
-      more.onclick = function () { toggleDetail(card); };
-      var wrap = document.createElement('div'); wrap.className = 'detail-wrap hide';
-      if (hasDetail) { var d = document.createElement('div'); d.className = 'detail'; d.innerHTML = mdBlock(it.detail); wrap.appendChild(d); card._detailEl = d; }
-      if (hasCode) {
-        var pre = document.createElement('pre'); pre.className = 'code'; pre._code = it.code; pre._hl = false; pre.textContent = it.code;
-        wrap.appendChild(pre); card._pre = pre;
-      }
-      card.appendChild(more); card.appendChild(wrap);
-      card._more = more; card._wrap = wrap;
-    }
-    if (hl.length) {
-      highlightMatches(q, hl); highlightMatches(a, hl);
-      if (card._detailEl) highlightMatches(card._detailEl, hl);
-    }
-    return card;
-  }
-
-  function updateUnpin() {
-    if (!els.unpinAll) return;
-    var n = ITEMS.filter(function (i) { return i.pinned; }).length;
-    els.unpinAll.hidden = n === 0;
-    els.unpinAll.textContent = 'Снять все закрепы' + (n ? ' (' + n + ')' : '');
-  }
-
-  var renderTimer = null;
-  function render() {
-    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
-    var hl = engine.highlightList(state.query);
-    var list = engine.run(state.query, state.cat);
-    // на главной без поиска — только закреплённые; поиск и категории — по всем
-    var pinnedOnly = !state.query && state.cat === '*';
-    if (suffMain && pinnedOnly) {                     // суфлёр вместо закрепов
-      updateUnpin();
-      els.results.innerHTML = ''; cardEls = []; state.sel = -1;   // карточки прошлой категории не должны ловить стрелки
-      suffShow();
-      return;
-    }
-    if (pinnedOnly) list = list.filter(function (it) { return it.pinned; });
-
-    els.suffTree.hidden = true; els.results.hidden = false;  // ушли в категорию/поиск: дерево прячем, но не рушим
-    els.results.innerHTML = ''; cardEls = []; state.sel = -1;
-    updateUnpin();
-
-    if (!list.length) {
-      els.empty.hidden = false;
-      els.empty.innerHTML = pinnedOnly
-        ? '<b>Здесь будут закреплённые вопросы</b><span>Нажми 📌 на карточке (открой категорию или поиск), чтобы держать её тут под рукой. А пока — ищи по всем темам или выбери категорию слева.</span>'
-        : '<b>Ничего не нашлось</b>';
-    } else els.empty.hidden = true;
-
-    els.counter.textContent = list.length
-      ? (state.query
-          ? list.length + ' ' + plural(list.length, 'совпадение', 'совпадения', 'совпадений')
-          : (pinnedOnly ? 'Закреплённые · ' : '') + list.length + ' ' + plural(list.length, 'карточка', 'карточки', 'карточек'))
-      : '';
-
-    var plan = [], grouped = pinnedOnly;
-    if (grouped) {
-      var byCat = {}; list.forEach(function (it) { (byCat[it.cat] = byCat[it.cat] || []).push(it); });
-      CATS.forEach(function (c) {
-        var arr = byCat[c.key]; if (!arr || !arr.length) return;
-        plan.push({ head: c, n: arr.length });
-        arr.forEach(function (it) { plan.push({ item: it, badge: false }); });
-      });
-    } else {
-      list.forEach(function (it) { plan.push({ item: it, badge: state.cat === '*' }); });
-    }
-    renderPlan(plan, hl);
-    els.results.scrollTop = 0;
-  }
-
-  function renderPlan(plan, hl) {
-    var i = 0;
-    function step() {
-      var frag = document.createDocumentFragment();
-      var end = Math.min(i + CHUNK, plan.length);
-      for (; i < end; i++) {
-        var u = plan[i];
-        if (u.head) {
-          var h = document.createElement('div'); h.className = 'cat-head';
-          h.innerHTML = '<h2>' + escHtml(u.head.title) + '</h2><span class="n">' + u.n + '</span>';
-          frag.appendChild(h);
-        } else {
-          var el = makeCard(u.item, hl, u.badge); cardEls.push(el); frag.appendChild(el);
-        }
-      }
-      els.results.appendChild(frag);
-      if (i < plan.length) renderTimer = setTimeout(step, 0); else renderTimer = null;
-    }
-    step();
-  }
-
-  function setCat(key) {
-    state.cat = key;
-    Array.prototype.forEach.call(els.cats.children, function (b) { b.classList.toggle('active', b.getAttribute('data-cat') === key); });
-    render();
-  }
-
-  function moveSel(delta) {
-    if (!cardEls.length) return;
-    var n = state.sel + delta; if (n < 0) n = 0; if (n >= cardEls.length) n = cardEls.length - 1;
-    if (state.sel >= 0 && cardEls[state.sel]) cardEls[state.sel].classList.remove('sel');
-    state.sel = n; var el = cardEls[n]; el.classList.add('sel'); el.scrollIntoView({ block: 'nearest' });
-  }
-  function toggleSelDetail() {
-    if (state.sel < 0) { if (cardEls.length) moveSel(1); }
-    var el = cardEls[state.sel]; if (el && el._more) toggleDetail(el);
-  }
-
-  var Q_PLACEHOLDER = els.q.getAttribute('placeholder') || '';
-  function clearSearch() {
-    els.q.value = ''; els.clear.hidden = true;
-    state.query = ''; render();   // дерево суфлёра в своём контейнере — перерисовка его не трогает
-  }
-
-  var typeTimer = null;
-  function onType() {
-    els.clear.hidden = !els.q.value;
-    if (typeTimer) clearTimeout(typeTimer);
-    if (suffMain) { // в режиме суфлёра можно вписать вопрос руками — уйдёт тем же ИИ-ответом в дерево
-      typeTimer = setTimeout(function () {
-        typeTimer = null; var v = els.q.value.trim();
-        if (!v) { render(); return; }
-        suffAsk(v); els.q.value = ''; els.clear.hidden = true; // спросили — освобождаем поле под следующий
-      }, 700);
-      return;
-    }
-    state.query = els.q.value;
-    typeTimer = setTimeout(function () { typeTimer = null; render(); }, 45);
-  }
-
-  els.q.addEventListener('input', onType);
-  els.clear.addEventListener('click', function () { clearSearch(); els.q.focus(); });
-  els.cats.addEventListener('click', function (e) {
-    var b = e.target.closest('.cat'); if (!b) return;
-    if (location.hash) location.hash = '';
-    setCat(b.getAttribute('data-cat'));
-  });
-  els.unpinAll.addEventListener('click', function () {
-    var prev = ITEMS.filter(function (i) { return i.pinned; });
-    prev.forEach(function (i) { i.pinned = false; });
-    render();
-    api.clearPins().catch(function () { prev.forEach(function (i) { i.pinned = true; }); render(); alert('Не удалось снять закрепы'); });
-  });
-
-  // --- попап «Текущая вакансия»: все личные заготовки в одном окне ---
-  var PERSONAL_SECTIONS = [
-    { key: 'self', icon: '👤', label: 'Расскажи о себе' },
-    { key: 'task', icon: '💡', label: 'Сложная / интересная задача' },
-    { key: 'jobs', icon: '🏢', label: 'Последние 3 места работы' },
-    { key: 'ask',  icon: '❓', label: 'Вопросы (что спросить)' }
-  ];
-  // отдельный попап на один личный блок (крупный текст), правка по карандашу в шапке
-  function openPersonal(s) {
-    var p = (window.PERSONAL || {})[s.key] || { title: '', body: '' };
-    els.modalTitle.textContent = s.icon + ' ' + (p.title || s.label);
-    els.modalEdit.hidden = false;
-    els.modalEdit.onclick = function () { editPersonalSection(s); };
-    els.modalBody.innerHTML = '<div class="personal-solo">' +
-      ((p.body && p.body.trim()) ? mdBlock(p.body) : '<span class="psec-empty">пусто — нажми ✎, чтобы заполнить</span>') + '</div>';
-    els.modal.hidden = false;
-    els.modalBody.scrollTop = 0;
-  }
-  function editPersonalSection(s) {
-    var p = (window.PERSONAL || {})[s.key] || { title: '', body: '' };
-    els.modalTitle.textContent = 'Правка: ' + s.label;
-    els.modalEdit.hidden = true;
-    els.modalBody.innerHTML = '';
-    var f = document.createElement('div'); f.className = 'pedit';
-    f.innerHTML =
-      '<label>Заголовок</label><input class="pe-title" type="text">' +
-      '<label>Текст <span class="hint">markdown ок: **жирный**, `код`, «- » список</span></label><textarea class="pe-body" rows="12"></textarea>' +
-      '<div class="edit-btns"><button class="btn primary pe-save" type="button">Сохранить</button><button class="btn pe-cancel" type="button">← Назад</button></div>';
-    els.modalBody.appendChild(f);
-    f.querySelector('.pe-title').value = p.title || '';
-    f.querySelector('.pe-body').value = p.body || '';
-    f.querySelector('.pe-save').onclick = function () {
-      var t = f.querySelector('.pe-title').value, b = f.querySelector('.pe-body').value;
-      window.PERSONAL[s.key] = { title: t, body: b };
-      api.editPersonal(s.key, { title: t, body: b }).catch(function () { alert('Не удалось сохранить'); });
-      openPersonal(s);
-    };
-    f.querySelector('.pe-cancel').onclick = function () { openPersonal(s); };
-  }
   function closeModal() { els.modal.hidden = true; }
-  Array.prototype.forEach.call(document.querySelectorAll('.psec-btn'), function (b) {
-    b.addEventListener('click', function () {
-      var key = b.getAttribute('data-psec');
-      var s = PERSONAL_SECTIONS.filter(function (x) { return x.key === key; })[0];
-      if (s) openPersonal(s);
-    });
-  });
   els.modal.addEventListener('click', function (e) { if (e.target.getAttribute('data-close')) closeModal(); });
 
   // --- мониторинг вакансий: отдельная страница (роут #monitoring) ---
   var monView = document.getElementById('monitoring-view');
-  var cheatView = document.getElementById('cheatsheet-view');
-  var sideMain = document.getElementById('sidebar-main');
+  var homeView = document.getElementById('home-view');
+  var suffView = document.getElementById('suffler-view');
+  var sidebar = document.getElementById('sidebar');
   var sideMon = document.getElementById('sidebar-mon');
   var srcList = document.getElementById('src-list');
+  var srcModal = document.getElementById('src-modal');
   var srcFile = document.getElementById('src-file');
   var srcUrl = document.getElementById('src-url');
   var fieldsTg = document.getElementById('src-fields-tg');
   var fieldsAccount = document.getElementById('src-fields-account');
   var srcKind = 'tg';
 
+  // добавление источника — попап, кнопка живёт в сайдбаре мониторинга
+  function openSrcAdd() { srcModal.hidden = false; if (srcKind === 'account') srcUrl.focus(); }
+  function closeSrcAdd() { srcModal.hidden = true; }
+  document.getElementById('src-add-open').addEventListener('click', openSrcAdd);
+  srcModal.addEventListener('click', function (e) { if (e.target.getAttribute('data-close')) closeSrcAdd(); });
+
+  var recView = document.getElementById('record-view');
+  var sideRec = document.getElementById('sidebar-rec');
+
   function route() {
     var mon = location.hash === '#monitoring';
-    if (mon && suffMain) suffStop(); // уходя в мониторинг — глушим суфлёр
-    cheatView.hidden = mon;
+    var rec = location.hash === '#record';
+    var suf = location.hash === '#suffler';
+    if (!suf && suffMain) suffStop(); // ушли со страницы суфлёра — глушим
+    homeView.hidden = mon || rec || suf;
+    suffView.hidden = !suf;
     monView.hidden = !mon;
-    sideMain.hidden = mon;
+    if (recView) recView.hidden = !rec;
+    sidebar.hidden = !(mon || rec);   // главная и суфлёр — без сайдбара, во всю ширину
     sideMon.hidden = !mon;
+    if (sideRec) sideRec.hidden = !rec;
     if (mon) { loadTgFiles(); loadSources(); loadVacancies(); loadAnalyzeStatus(); }
+    if (rec && window.SOBES.recUI) window.SOBES.recUI.open();
   }
-  var backHome = document.getElementById('backHome');
-  if (backHome) backHome.addEventListener('click', function (e) { e.preventDefault(); location.hash = ''; });
+  Array.prototype.forEach.call(document.querySelectorAll('#backHome, #backHomeSuff'), function (b) {
+    b.addEventListener('click', function (e) { e.preventDefault(); location.hash = ''; });
+  });
 
   var allTgFiles = [], curSources = [];
   function fillFileSelect() {
@@ -485,10 +175,10 @@
       items.forEach(function (s) { srcList.appendChild(srcRow(s)); });
     });
   }
-  Array.prototype.forEach.call(monView.querySelectorAll('.src-tab'), function (tab) {
+  Array.prototype.forEach.call(srcModal.querySelectorAll('.src-tab'), function (tab) {
     tab.addEventListener('click', function () {
       srcKind = tab.getAttribute('data-kind');
-      Array.prototype.forEach.call(monView.querySelectorAll('.src-tab'), function (t) { t.classList.toggle('active', t === tab); });
+      Array.prototype.forEach.call(srcModal.querySelectorAll('.src-tab'), function (t) { t.classList.toggle('active', t === tab); });
       var isAcc = srcKind === 'account';
       fieldsTg.hidden = isAcc; fieldsAccount.hidden = !isAcc;
     });
@@ -507,6 +197,7 @@
     api.addSource(payload).then(function (res) {
       if (res && res.existed) { alert('Такой источник уже добавлен'); return; }
       srcUrl.value = '';
+      closeSrcAdd();
       loadSources();
     }).catch(function () { alert('Не удалось добавить источник'); });
   });
@@ -518,7 +209,9 @@
     { key: 'new',     label: '🆕 Новые',        match: function (v) { return v.applyStatus === 'new'; } },
     { key: 'drafts',  label: '✍️ Черновики',    match: function (v) { return v.applyStatus === 'queued' || v.applyStatus === 'approved'; } },
     { key: 'manual',  label: '✋ Ручной разбор', match: function (v) { return v.applyStatus === 'needs_manual'; } },
-    { key: 'applied', label: '✅ Откликнулся',  match: function (v) { return v.applyStatus === 'applied'; } }
+    { key: 'applied', label: '✅ Откликнулся',  match: function (v) { return v.applyStatus === 'applied'; } },
+    { key: 'direct',  label: '📬 Прямой отклик', match: function (v) { return v.applyStatus === 'direct'; } },
+    { key: 'done',    label: '🏁 Завершено',    match: function (v) { return v.applyStatus === 'done'; } }
   ];
   function curFilter() { for (var i = 0; i < VAC_FILTERS.length; i++) if (VAC_FILTERS[i].key === vacFilter) return VAC_FILTERS[i]; return VAC_FILTERS[0]; }
   function statusMatch(v) { return curFilter().match(v); }
@@ -528,8 +221,8 @@
       .catch(function () { vacList.innerHTML = '<div class="src-empty">Ошибка загрузки</div>'; });
   }
   function sortedVacs(list) {
-    // в «Откликнулся» — последний отклик сверху; иначе как отдаёт API (score desc)
-    if (vacFilter === 'applied') {
+    // в отработанных статусах — последний отклик сверху; иначе как отдаёт API (score desc)
+    if (vacFilter === 'applied' || vacFilter === 'direct' || vacFilter === 'done') {
       list = list.slice().sort(function (a, b) {
         return new Date(b.appliedAt || 0) - new Date(a.appliedAt || 0);
       });
@@ -570,11 +263,19 @@
     queued:       ['✍️ черновик готов', 'q'],
     approved:     ['⏳ одобрено', 'a'],
     applied:      ['✅ откликнулся', 'ok'],
+    direct:       ['📬 прямой отклик', 'd'],
+    done:         ['🏁 завершено', 'f'],
     needs_manual: ['✋ ручной разбор', 'm']
   };
+  // все действия карточки — одинаковые кнопки, живут одной строкой в футере
   function vbtn(text, cls, on) {
     var b = document.createElement('button'); b.type = 'button';
-    b.className = 'btn' + (cls ? ' ' + cls : ''); b.textContent = text; b.onclick = on; return b;
+    b.className = 'vac-btn' + (cls ? ' ' + cls : ''); b.textContent = text; b.onclick = on; return b;
+  }
+  function vlink(text, href, title) {
+    var a = document.createElement('a'); a.className = 'vac-btn'; a.href = href;
+    a.target = '_blank'; a.rel = 'noopener'; a.textContent = text; if (title) a.title = title;
+    return a;
   }
   // отказ от вакансии навсегда: уходит из выдачи и больше не всплывёт при следующих сканах
   function skipBtn(v) {
@@ -598,6 +299,46 @@
     return 'https://www.google.com/search?q=' +
       encodeURIComponent(q + ' вакансии карьера официальный сайт -site:hh.ru -site:career.habr.com -site:superjob.ru');
   }
+  // найденный контакт нанимающей стороны → кликабельная ссылка (null, если ссылкой не оформить)
+  var CONTACT_ICON = { email: '✉️', tg: '✈️', linkedin: 'in', phone: '☎️', site: '🌐', other: '•' };
+  function contactHref(c) {
+    var val = (c.value || '').trim();
+    if (!val) return null;
+    if (c.kind === 'email') return 'mailto:' + val;
+    if (c.kind === 'phone') return 'tel:' + val.replace(/[^\d+]/g, '');
+    if (c.kind === 'tg') {
+      if (/^https?:\/\//i.test(val)) return val;
+      return 'https://t.me/' + val.replace(/^@/, '');
+    }
+    return applyHref(val);
+  }
+  // контакты, до которых удалось докопаться в обход площадки
+  function hrContactsBlock(v) {
+    var box = document.createElement('div'); box.className = 'vac-apply direct';
+    var lbl = document.createElement('div'); lbl.className = 'vac-apply-lbl';
+    lbl.textContent = '📬 Прямые контакты (' + v.hrContacts.length + ')';
+    box.appendChild(lbl);
+    var ul = document.createElement('ul'); ul.className = 'vac-hr';
+    v.hrContacts.forEach(function (c) {
+      var li = document.createElement('li');
+      var ic = document.createElement('span'); ic.className = 'vac-hr-ic'; ic.textContent = CONTACT_ICON[c.kind] || '•';
+      li.appendChild(ic);
+      var href = contactHref(c);
+      if (href) {
+        var a = document.createElement('a'); a.className = 'vac-hr-v'; a.href = href;
+        a.target = '_blank'; a.rel = 'noopener'; a.textContent = c.value;
+        li.appendChild(a);
+      } else {
+        var s = document.createElement('span'); s.className = 'vac-hr-v'; s.textContent = c.value; li.appendChild(s);
+      }
+      if (c.name) { var nm = document.createElement('span'); nm.className = 'vac-hr-n'; nm.textContent = c.name; li.appendChild(nm); }
+      if (c.note) { var nt = document.createElement('span'); nt.className = 'vac-hr-note'; nt.textContent = c.note; li.appendChild(nt); }
+      if (c.source) { var sr = document.createElement('span'); sr.className = 'vac-hr-src'; sr.textContent = 'откуда: ' + c.source; li.appendChild(sr); }
+      ul.appendChild(li);
+    });
+    box.appendChild(ul);
+    return box;
+  }
   function applyBadge(v) {
     var b = APPLY_BADGE[v.applyStatus]; if (!b) return null; // 'new' — без бейджа
     var el = document.createElement('span'); el.className = 'vac-badge b-' + b[1]; el.textContent = b[0];
@@ -619,7 +360,7 @@
     wrap.appendChild(pre);
     editBtn.onclick = function () {
       var ta = document.createElement('textarea'); ta.className = 'vac-cover-input'; ta.value = v.coverLetter || '';
-      var saveRow = document.createElement('div'); saveRow.className = 'vac-apply-btns';
+      var saveRow = document.createElement('span'); saveRow.className = 'vac-foot-act';
       var saveBtn = vbtn('💾 Сохранить', 'primary', function () {
         saveBtn.disabled = true;
         api.saveCoverLetter(v.id, ta.value).then(loadVacancies).catch(function () { alert('Не удалось сохранить'); saveBtn.disabled = false; });
@@ -633,46 +374,44 @@
     };
     return wrap;
   }
-  // блок под карточкой: черновик+одобрение / ручная форма / ожидание отправки
-  function applyBlock(v) {
+  // действия и пояснения по статусу: коробка (черновик письма / заметка) отдельно, кнопки — в футер
+  function applyParts(v) {
     var st = v.applyStatus;
+    var act = document.createElement('span'); act.className = 'vac-foot-act';
+    var box = null;
     if (st === 'queued') {
-      var box = document.createElement('div'); box.className = 'vac-apply';
-      var row = document.createElement('div'); row.className = 'vac-apply-btns';
-      row.appendChild(vbtn('✅ Одобрить отправку', 'primary', function () { api.approveApply(v.id).then(loadVacancies).catch(loadVacancies); }));
-      row.appendChild(skipBtn(v));
-      box.appendChild(coverLetterBlock(v, row));
-      box.appendChild(row);
-      return box;
-    }
-    if (st === 'needs_manual') {
-      var box2 = document.createElement('div'); box2.className = 'vac-apply need';
+      box = document.createElement('div'); box.className = 'vac-apply';
+      act.appendChild(vbtn('✅ Одобрить отправку', 'primary', function () { api.approveApply(v.id).then(loadVacancies).catch(loadVacancies); }));
+      act.appendChild(skipBtn(v));
+      box.appendChild(coverLetterBlock(v, act));
+    } else if (st === 'needs_manual') {
+      box = document.createElement('div'); box.className = 'vac-apply need';
       var n = document.createElement('div'); n.className = 'vac-apply-note'; n.textContent = '✋ Нужна твоя рука: ' + (v.applyNote || 'внешняя форма/тест');
-      box2.appendChild(n);
-      var row2 = document.createElement('div'); row2.className = 'vac-apply-btns';
-      row2.appendChild(vbtn('✓ Я откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
-      row2.appendChild(skipBtn(v));
-      box2.appendChild(coverLetterBlock(v, row2));
-      box2.appendChild(row2);
-      return box2;
+      box.appendChild(n);
+      act.appendChild(vbtn('✓ Я откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      act.appendChild(skipBtn(v));
+      box.appendChild(coverLetterBlock(v, act));
+    } else if (st === 'approved') {
+      box = document.createElement('div'); box.className = 'vac-apply wait';
+      var w = document.createElement('div'); w.className = 'vac-apply-note'; w.textContent = '⏳ Одобрено — отправлю отклик при следующем прогоне';
+      box.appendChild(w);
+      act.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      act.appendChild(skipBtn(v));
+    } else if (st === 'direct') { // отклик через площадку ушёл, но нашлись живые контакты — пишем мимо неё
+      box = hrContactsBlock(v);
+      // «Пропустить» здесь не даём: setDupeGroup не трогает direct, кнопка молча ничего бы не делала.
+      // Отработал контакты — «Завершить», контакты не годятся — «Убрать» (вернёт в applied)
+      act.appendChild(vbtn('🏁 Завершить', 'primary', function () {
+        api.markDone(v.id).then(loadVacancies).catch(loadVacancies);
+      }));
+      act.appendChild(vbtn('✂️ Убрать контакты', '', function () {
+        api.saveContacts(v.id, []).then(loadVacancies).catch(loadVacancies);
+      }));
+    } else if (st === 'new') { // подходящая, ещё без отклика — дать пометить вручную (для тг отклик всегда ручной)
+      act.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
+      act.appendChild(skipBtn(v));
     }
-    if (st === 'approved') {
-      var box3 = document.createElement('div'); box3.className = 'vac-apply wait';
-      var w3 = document.createElement('div'); w3.className = 'vac-apply-note'; w3.textContent = '⏳ Одобрено — отправлю отклик при следующем прогоне';
-      box3.appendChild(w3);
-      var row3 = document.createElement('div'); row3.className = 'vac-apply-btns';
-      row3.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
-      row3.appendChild(skipBtn(v));
-      box3.appendChild(row3); return box3;
-    }
-    if (st === 'new') { // подходящая, ещё без отклика — дать пометить вручную (для тг отклик всегда ручной)
-      var box4 = document.createElement('div'); box4.className = 'vac-apply';
-      var row4 = document.createElement('div'); row4.className = 'vac-apply-btns';
-      row4.appendChild(vbtn('✓ Откликнулся', 'primary', function () { api.markApplied(v.id).then(loadVacancies).catch(loadVacancies); }));
-      row4.appendChild(skipBtn(v));
-      box4.appendChild(row4); return box4;
-    }
-    return null;
+    return { box: box, act: act };
   }
   function renderVacancies(fullList) {
     var cnt = document.getElementById('vac-count');
@@ -698,6 +437,8 @@
       var del = document.createElement('button'); del.type = 'button'; del.className = 'src-del'; del.textContent = '✕'; del.title = 'Убрать';
       del.onclick = function () { api.deleteVacancy(v.id).then(loadVacancies).catch(loadVacancies); };
       head.appendChild(sc); head.appendChild(tt);
+      // работодатель виден на карточке: по нему режется дедуп, иначе две карточки с одним названием неотличимы
+      if (v.company) { var co = document.createElement('span'); co.className = 'vac-co'; co.textContent = v.company; head.appendChild(co); }
       var bdg = applyBadge(v); if (bdg) head.appendChild(bdg);
       if (v.applyStatus === 'applied' && v.appliedAt) {
         var ad = document.createElement('span'); ad.className = 'vac-applied-date';
@@ -716,45 +457,46 @@
         v.mismatches.forEach(function (t) { var li = document.createElement('li'); li.textContent = t; ul.appendChild(li); });
         mm.appendChild(ul); card.appendChild(mm);
       }
-      var meta = document.createElement('div'); meta.className = 'vac-m';
-      if (v.link && v.applyStatus !== 'applied') { // на уже откликнутых кнопка отклика не нужна
+      var parts = applyParts(v);
+      if (parts.box) card.appendChild(parts.box);
+      // контакты нашлись, а статус уже другой (например, откликнулся напрямую) — всё равно показываем
+      else if (v.hrContacts && v.hrContacts.length) card.appendChild(hrContactsBlock(v));
+
+      // футер: все действия одной строкой, кнопки одного размера
+      var foot = document.createElement('div'); foot.className = 'vac-foot';
+      var doneWith = v.applyStatus === 'applied' || v.applyStatus === 'direct' || v.applyStatus === 'done';
+      if (v.link && !doneWith) { // на уже откликнутых кнопка отклика не нужна
         var href = applyHref(v.link);
-        if (href) {
-          var a = document.createElement('a'); a.className = 'vac-apply-link'; a.href = href; a.target = '_blank'; a.rel = 'noopener';
-          a.textContent = '📩 Откликнуться'; a.title = v.link;
-          meta.appendChild(a); meta.appendChild(document.createTextNode(' '));
-        } else { // контакт не оформлен ссылкой (телефон, "писать в ЛС" и т.п.) — показываем текстом
-          var ct = document.createElement('span'); ct.className = 'vac-apply-contact'; ct.textContent = '📩 ' + v.link;
-          meta.appendChild(ct); meta.appendChild(document.createTextNode(' '));
+        if (href) foot.appendChild(vlink('📩 Откликнуться', href, v.link));
+        else { // контакт не оформлен ссылкой (телефон, "писать в ЛС" и т.п.) — показываем текстом
+          var ct = document.createElement('span'); ct.className = 'vac-btn plain'; ct.textContent = '📩 ' + v.link; ct.title = v.link;
+          foot.appendChild(ct);
         }
       }
-      if (v.tgPostUrl) {
-        var tg = document.createElement('a'); tg.className = 'vac-tg-link'; tg.href = v.tgPostUrl; tg.target = '_blank'; tg.rel = 'noopener';
-        tg.textContent = '📨 Открыть в телеграме'; tg.title = 'Оригинальный пост (нужно быть в этом канале)';
-        meta.appendChild(tg); meta.appendChild(document.createTextNode(' '));
-      }
-      var find = document.createElement('a'); find.className = 'vac-find';
-      find.href = v.companyUrl || companySearchUrl(v); find.target = '_blank'; find.rel = 'noopener';
-      find.textContent = v.companyUrl ? '🏢 сайт компании' : '🔎 искать компанию';
-      find.title = v.company ? (v.companyUrl ? 'Открыть: ' + v.company : 'Найти сайт/вакансии: ' + v.company) : 'Поиск по названию вакансии';
-      meta.appendChild(find);
-      card.appendChild(meta);
+      if (v.tgPostUrl) foot.appendChild(vlink('📨 В телеграме', v.tgPostUrl, 'Оригинальный пост (нужно быть в этом канале)'));
+      foot.appendChild(vlink(
+        v.companyUrl ? '🏢 сайт компании' : '🔎 искать компанию',
+        v.companyUrl || companySearchUrl(v),
+        v.company ? (v.companyUrl ? 'Открыть: ' + v.company : 'Найти сайт/вакансии: ' + v.company) : 'Поиск по названию вакансии'
+      ));
+      var textBox = null;
       if (v.text || v.linkText) {
         var moreLbl = isWeb ? 'Описание вакансии' : 'Текст сообщения';
-        var more = document.createElement('button'); more.type = 'button'; more.className = 'more'; more.textContent = moreLbl;
-        var box = document.createElement('div'); box.className = 'vac-text hide';
+        textBox = document.createElement('div'); textBox.className = 'vac-text hide';
         if (v.text) {
           var l1 = document.createElement('div'); l1.className = 'vac-text-lbl'; l1.textContent = isWeb ? 'Кратко' : 'Пост в телеграме';
-          var p1 = document.createElement('pre'); p1.className = 'vac-pre'; p1.textContent = v.text; box.appendChild(l1); box.appendChild(p1);
+          var p1 = document.createElement('pre'); p1.className = 'vac-pre'; p1.textContent = v.text; textBox.appendChild(l1); textBox.appendChild(p1);
         }
         if (v.linkText) {
           var l2 = document.createElement('div'); l2.className = 'vac-text-lbl'; l2.textContent = isWeb ? 'Полное описание' : 'Описание по ссылке';
-          var p2 = document.createElement('pre'); p2.className = 'vac-pre'; p2.textContent = v.linkText; box.appendChild(l2); box.appendChild(p2);
+          var p2 = document.createElement('pre'); p2.className = 'vac-pre'; p2.textContent = v.linkText; textBox.appendChild(l2); textBox.appendChild(p2);
         }
-        more.onclick = function () { var h = box.classList.toggle('hide'); more.textContent = h ? moreLbl : 'Скрыть'; };
-        card.appendChild(more); card.appendChild(box);
+        var more = vbtn(moreLbl, '', function () { var h = textBox.classList.toggle('hide'); more.textContent = h ? moreLbl : 'Скрыть'; });
+        foot.appendChild(more);
       }
-      var ab = applyBlock(v); if (ab) card.appendChild(ab);
+      foot.appendChild(parts.act);
+      card.appendChild(foot);
+      if (textBox) card.appendChild(textBox);
       vacList.appendChild(card);
     });
     renderPager(vacPage, totalPages);
@@ -795,9 +537,93 @@
     pause: document.getElementById('suff-pause'),
     reset: document.getElementById('suff-reset'),
     shot: document.getElementById('suff-shot'),
+    ask: document.getElementById('suff-ask'),
+    logBtn: document.getElementById('suff-log-btn'),
     video: document.getElementById('suff-video'),
+    level: document.getElementById('suff-level'),
+    levelBar: document.getElementById('suff-level-bar'),
+    levelWarn: document.getElementById('suff-level-warn'),
     videoWrap: document.getElementById('suff-video-wrap')
   };
+
+  // ---- лог транскрипта: сырое распознавание + правка до эталона, чтобы мерить будущие улучшения ASR, а не гадать ----
+  // Живёт в localStorage (переживает reset/выключение/reload) — сессию записал, потом правишь и выгружаешь .jsonl.
+  var SUFF_LOG_KEY = 'sobes:transcript-log';
+  var suffLog = [];
+  try { var _sl = JSON.parse(localStorage.getItem(SUFF_LOG_KEY) || '[]'); if (Array.isArray(_sl)) suffLog = _sl; } catch (e) {}
+  function suffLogSave() { try { localStorage.setItem(SUFF_LOG_KEY, JSON.stringify(suffLog)); } catch (e) {} }
+  function suffLogBump() {   // в топбаре — показываем только когда есть что смотреть (переживает выключение суфлёра)
+    if (!suff.logBtn) return;
+    suff.logBtn.textContent = '📝 транскрипт (' + suffLog.length + ')';
+    suff.logBtn.hidden = !suffLog.length;
+  }
+  function suffLogAdd(raw) {                                    // сырой финал ASR → запись эталона (fix стартует = raw)
+    raw = (raw || '').replace(/\s+/g, ' ').trim();
+    if (!raw) return;
+    suffLog.push({ ts: Date.now(), raw: raw, fix: raw });
+    if (suffLog.length > 3000) suffLog.shift();                 // не растим бесконечно
+    suffLogSave(); suffLogBump();
+  }
+  function suffLogStamp() {
+    var d = new Date(), p = function (n) { return (n < 10 ? '0' : '') + n; };
+    return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes());
+  }
+  function suffLogExport() {                                    // jsonl: строка на реплику, сырое + эталон + время
+    if (!suffLog.length) return;
+    var t0 = suffLog[0].ts;
+    var body = suffLog.map(function (e) {
+      return JSON.stringify({ t: e.ts - t0, ts: e.ts, raw: e.raw, corrected: e.fix });
+    }).join('\n');
+    var url = URL.createObjectURL(new Blob([body], { type: 'application/x-ndjson' }));
+    var a = document.createElement('a');
+    a.href = url; a.download = 'transcript-' + suffLogStamp() + '.jsonl';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+  }
+  // модалка: слева сырое распознавание, справа — правишь до эталона; правки сразу в localStorage
+  function suffLogOpen() {
+    els.modalTitle.textContent = '📝 Транскрипт сессии — эталон для оценки ASR';
+    els.modalBody.innerHTML = '';
+    var wrap = document.createElement('div'); wrap.className = 'tlog';
+    var head = document.createElement('div'); head.className = 'tlog-head';
+    var edited = suffLog.filter(function (e) { return e.fix !== e.raw; }).length;
+    head.innerHTML =
+      '<span class="tlog-count">' + suffLog.length + ' реплик' + (edited ? ' · ' + edited + ' правлено' : '') + '</span>' +
+      '<span class="tlog-hint">слева — как распозналось, справа — правь до эталона</span>' +
+      '<button type="button" class="btn primary tlog-dl">⬇ Скачать .jsonl</button>' +
+      '<button type="button" class="btn tlog-clear">🗑 Очистить</button>';
+    wrap.appendChild(head);
+    var list = document.createElement('div'); list.className = 'tlog-list';
+    if (!suffLog.length) {
+      list.innerHTML = '<div class="tlog-empty">пока пусто — включи суфлёр и дай собеседнику говорить, реплики появятся здесь</div>';
+    } else {
+      suffLog.forEach(function (e, i) {
+        var row = document.createElement('div'); row.className = 'tlog-row';
+        var raw = document.createElement('div'); raw.className = 'tlog-raw'; raw.textContent = e.raw;
+        var inp = document.createElement('textarea'); inp.className = 'tlog-fix'; inp.rows = 2; inp.value = e.fix;
+        if (e.fix !== e.raw) inp.classList.add('edited');
+        inp.oninput = function () {
+          e.fix = inp.value;                    // по объекту записи, не по индексу — иммунно к сдвигу при переполнении
+          inp.classList.toggle('edited', inp.value !== e.raw);
+          suffLogSave();
+        };
+        row.appendChild(raw); row.appendChild(inp);
+        list.appendChild(row);
+      });
+    }
+    wrap.appendChild(list);
+    els.modalBody.appendChild(wrap);
+    head.querySelector('.tlog-dl').onclick = suffLogExport;
+    head.querySelector('.tlog-clear').onclick = function () {
+      if (!suffLog.length) return;
+      if (!confirm('Очистить весь записанный транскрипт? Отменить нельзя.')) return;
+      suffLog = []; suffLogSave(); suffLogBump(); suffLogOpen();
+    };
+    els.modal.hidden = false;
+    els.modalBody.scrollTop = 0;
+  }
+  if (suff.logBtn) suff.logBtn.addEventListener('click', suffLogOpen);
+  suffLogBump();
   var suffMain = false, suffPaused = false;
   var suffThreads = [];             // темы по порядку (текущая — последняя, снизу); ответы копятся, ничего не пропадает
   var suffAskBuf = '';              // накопитель распознанной речи до ближайшего вопроса
@@ -910,6 +736,35 @@
     var low = (phrase || '').trim().toLowerCase();
     return SUFF_FOLLOW.some(function (m) { return low.indexOf(m) === 0; });
   }
+  // Поддакивания собеседника («ага», «понятно», «окей»). Реплика ЦЕЛИКОМ из них не должна плодить тему и жечь воркер.
+  // Двусмысленные слова (класс=ООП-класс, так/да/верно/точно — знаменательные) сюда класть можно только для гейта
+  // ЦЕЛОЙ реплики, но НЕ для среза с краёв — иначе «что такое класс»→«что такое», «...не так»→«...не».
+  var SUFF_BACKCHANNEL = {}, SUFF_PURE_ACK = {};
+  // гейт целой реплики: «класс» тут НЕТ (частый ООП-вопрос «что такое класс» терять нельзя)
+  ('ага угу мгу гм хм ммм мм эм ну да окей ок оки ясно ясненько понятно понял поняла поняли ' +
+   'хорошо ладно так супер отлично здорово именно точно верно логично интересно годится')
+    .split(/\s+/).forEach(function (w) { SUFF_BACKCHANNEL[w] = 1; });
+  // безопасно срезать с краёв: чистые звуки-квитанции, которые НИКОГДА не несут смысла (без так/да/верно/класс)
+  ('ага угу мгу гм хм ммм мм эм ну окей ок оки ясно ясненько понятно понял поняла поняли')
+    .split(/\s+/).forEach(function (w) { SUFF_PURE_ACK[w] = 1; });
+  function suffTokens(phrase) {
+    return (phrase || '').toLowerCase().split(/[\s,.!?;:()"«»\-]+/).filter(Boolean);
+  }
+  // вся фраза — только поддакивания? (каждый токен в гейт-словаре). «ага» → да; «что такое» → нет (каркас вопроса)
+  function suffBackchannelOnly(phrase) {
+    var t = suffTokens(phrase);
+    return t.length > 0 && t.every(function (w) { return SUFF_BACKCHANNEL[w]; });
+  }
+  // срезать ведущие/хвостовые ЧИСТЫЕ квитанции: «ага что такое индекс угу» → «что такое индекс».
+  // Только SUFF_PURE_ACK — двусмысленные так/да/класс не трогаем, чтобы не съесть смысл.
+  function suffStripBackchannel(phrase) {
+    var t = suffTokens(phrase);
+    var a = 0, b = t.length;
+    while (a < b && SUFF_PURE_ACK[t[a]]) a++;
+    while (b > a && SUFF_PURE_ACK[t[b - 1]]) b--;
+    if (a === 0 && b === t.length) return (phrase || '').trim();   // нечего срезать — не трогаем регистр/пунктуацию
+    return t.slice(a, b).join(' ');
+  }
   // та же тема? — общий концепт / общее смысловое слово (или его словоформа) / короткое уточнение по горячим следам
   function suffSameTopic(sig, phrase, topic, now) {
     if (now - topic.lastAt > 90000) return false;            // >1.5 мин тишины — считаем новой темой
@@ -939,8 +794,8 @@
     fn();
     if (!atTop) e.scrollTop += (e.scrollHeight - oldH);
   }
-  // дерево на экране? в категории/поиске оно живёт, но спрятано — счётчик и скролл трогать нельзя
-  function suffViewOn() { return suffMain && !state.query && state.cat === '*'; }
+  // дерево на экране? ушёл на другую страницу — суфлёр ещё живёт, но счётчик трогать нельзя
+  function suffViewOn() { return suffMain && location.hash === '#suffler'; }
   // счётчик тем — только когда дерево видно; иначе метим тумблер точкой «пришёл ответ»
   function suffBump() {
     if (suffViewOn()) { els.counter.textContent = '🎧 тем в эфире: ' + suffThreads.length; return; }
@@ -948,6 +803,7 @@
   }
   // снести все ветки (сброс/выключение) — узлы уходят, стримы к ним глохнут по isConnected
   function suffClearTree() {
+    suffAbortAll();
     suffThreads = [];
     var tree = els.suffTree;
     while (tree.lastChild) tree.removeChild(tree.lastChild);
@@ -991,7 +847,7 @@
     a.innerHTML = '<span class="suff-ai-wait">🤖 думаю…</span>';
     qa.appendChild(q); qa.appendChild(a);
     suffMutate(function () { topic.answersEl.appendChild(qa); });   // уточнение — под основным ответом темы
-    var rec = { q: phrase, aEl: a, ans: '' };
+    var rec = { q: phrase, aEl: a, qEl: q, ans: '' };               // qEl — чтобы обновить текст вопроса при supersede
     (topic.qa = topic.qa || []).push(rec);
     return rec;
   }
@@ -1024,11 +880,8 @@
     });
     return h;
   }
-  // показать накопленное дерево: свой контейнер вместо #results, ветки при этом не трогаем
+  // показать накопленное дерево (ветки при этом не трогаем)
   function suffShow() {
-    els.empty.hidden = true;
-    els.results.hidden = true;
-    els.suffTree.hidden = false;
     els.suffHint.hidden = suffThreads.length > 0;
     if (suff.toggle) suff.toggle.classList.remove('new');
     els.counter.textContent = suffThreads.length
@@ -1064,36 +917,92 @@
     return false;
   }
 
-  // ---- AI-суфлёр: вопрос собеседника → ответ Claude (карточки подмешиваются, если нашлись) ----
-  function suffAsk(phrase) {
-    var p = (phrase || '').replace(/\s+/g, ' ').trim();
-    if (!suffMain || p.length < 3) return;         // «ООП?», «CAP?», «GIL?» — короткие, но настоящие вопросы
-    var pn = engine.norm(p);
-    if (!pn || suffAskedRecently(pn)) return;      // распознавание любит повторить фразу с мелкой разницей
-    var sig = suffTopicSig(p);
-    var topic = suffRouteTopic(p, sig);
-    var history = suffTopicHistory(topic);         // контекст темы собираем ДО добавления текущего вопроса
-    var rec = suffAddQA(topic, p);
+  // дедлайны сами пишут человеческий текст (число секунд там же, где константа) — тут только техническое
+  var SUFF_ERR = { http: 'сервер вернул ошибку', network: 'сеть отвалилась' };
+  // сбой прямо в узле ответа: недостримленный кусок сохраняем, рядом — кнопка повтора
+  function suffFail(rec, acc, err) {
     var body = rec.aEl;
-    suffBump();
-    var acc = '';
-    api.askStream(p, suffCards(p), function (chunk) {   // карточки — справка (пусто = ИИ сам); history — контекст уточнений
+    body.innerHTML = '';
+    if (acc) {
+      var parts = suffSplitAnswer(acc);
+      var part = document.createElement('div'); part.innerHTML = mdBlock(parts.main); body.appendChild(part);
+      if (parts.more) part.appendChild(suffMoreBlock(parts.more));   // успело дойти до деталей — не выбрасываем
+    }
+    var kind = (err && err.kind) || 'network';
+    var msg = document.createElement('div'); msg.className = 'suff-ai-err';
+    msg.textContent = '⚠ ' + (SUFF_ERR[kind] ? SUFF_ERR[kind] + ' · ' + ((err && err.message) || '?') : (err && err.message) || 'обрыв');
+    var btn = document.createElement('button'); btn.type = 'button'; btn.className = 'suff-retry';
+    btn.textContent = '↻ спросить ещё раз';
+    btn.onclick = function () { suffRun(rec); };
+    body.appendChild(msg); body.appendChild(btn);
+  }
+  // один прогон стрима в готовый узел: отмена своим контроллером, дедлайны внутри api.js
+  function suffRun(rec) {
+    var body = rec.aEl, acc = '';
+    if (rec.ctrl) { try { rec.ctrl.abort(); } catch (e) {} }
+    var ctrl = new AbortController();
+    rec.ctrl = ctrl; rec.ans = '';
+    // через suffMutate: на повторе узел схлопывается с высокого (ответ+ошибка+кнопка) до спиннера — компенсируем скролл
+    suffMutate(function () { body.innerHTML = '<span class="suff-ai-wait">' + (rec.wait || '🤖 думаю…') + '</span>'; });
+
+    // рендерим mdBlock прямо на стриме (а не сырой textContent), чтобы суть сразу была <p> и не скакала
+    // 17→20px на завершении, а буллеты были списком, а не «- ». Троттлинг по rAF: пачка чанков в кадре → один
+    // рендер, без повторных reflow (scrollHeight в suffMutate) — это и убирает дёрганье.
+    var raf = 0;
+    function paint() {
+      raf = 0;
       if (!body.isConnected) return;
+      var main = suffSplitAnswer(acc).main;
+      if (!main) return;                                 // сути ещё нет — держим спиннер, не мигаем
+      suffMutate(function () { body.innerHTML = mdBlock(main); });
+    }
+    function stopRaf() { if (raf) { cancelAnimationFrame(raf); raf = 0; } }
+
+    rec.start(function (chunk) {
+      if (!body.isConnected) { ctrl.abort(); return; }   // ветку снесли — рвём запрос, а не держим воркер до конца
       acc += chunk;
-      rec.ans = acc;    // пишем на каждом чанке: уточнение часто прилетает ДО конца ответа и должно видеть контекст
-      suffMutate(function () { body.textContent = suffSplitAnswer(acc).main; });   // пока стримится — только суть
-    }, history).then(function () {
-      if (!body.isConnected) return;
-      rec.ans = acc;
+      rec.ans = acc;   // пишем на каждом чанке: уточнение часто прилетает ДО конца ответа и должно видеть контекст
+      if (!raf) raf = requestAnimationFrame(paint);      // не чаще кадра
+    }, ctrl.signal).then(function () {
+      if (rec.ctrl === ctrl) rec.ctrl = null;   // не затираем более новый ctrl (supersede/повтор уже перезапустили стрим)
+      stopRaf();
+      if (rec.ctrl !== null || !body.isConnected) return;   // узел перезапущен новым прогоном — этот результат уже неактуален
       var parts = suffSplitAnswer(acc);
       suffMutate(function () {
         body.innerHTML = parts.main ? mdBlock(parts.main) : (acc ? mdBlock(acc) : '<span class="suff-ai-err">пустой ответ</span>');
         if (parts.more) body.appendChild(suffMoreBlock(parts.more));  // детали/пример — под «подробнее»
       });
     }).catch(function (e) {
-      if (!body.isConnected) return;
-      body.innerHTML = (acc ? mdBlock(suffSplitAnswer(acc).main) + '<br>' : '') + '<span class="suff-ai-err">обрыв (' + escHtml(String((e && e.message) || e)) + ')</span>';
+      var mine = rec.ctrl === ctrl;
+      if (mine) rec.ctrl = null;
+      stopRaf();
+      if (!mine || !body.isConnected || (e && e.kind === 'aborted')) return;   // не мой прогон / сброс / выключение — молча
+      suffMutate(function () { suffFail(rec, acc, e); });
     });
+  }
+  // оборвать все висящие запросы (сброс/выключение) — иначе воркеры php-fpm держатся до конца стрима
+  function suffAbortAll() {
+    suffThreads.forEach(function (t) {
+      (t.qa || []).forEach(function (r) { if (r.ctrl) { try { r.ctrl.abort(); } catch (e) {} r.ctrl = null; } });
+    });
+  }
+
+  // ---- AI-суфлёр: вопрос собеседника → ответ Claude (карточки подмешиваются, если нашлись) ----
+  function suffAsk(phrase) {
+    var p = (phrase || '').replace(/\s+/g, ' ').trim();
+    if (!suffMain || p.length < 3) return null;    // «ООП?», «CAP?», «GIL?» — короткие, но настоящие вопросы
+    var pn = engine.norm(p);
+    if (!pn || suffAskedRecently(pn)) return null; // распознавание любит повторить фразу с мелкой разницей
+    var sig = suffTopicSig(p);
+    var topic = suffRouteTopic(p, sig);
+    var history = suffTopicHistory(topic);         // контекст темы собираем ДО добавления текущего вопроса
+    var rec = suffAddQA(topic, p);
+    rec.cards = suffCards(p);      // справка из базы (пусто = ИИ отвечает сам); history — контекст уточнений
+    rec.history = history;
+    rec.start = function (onChunk, signal) { return api.askStream(rec.q, rec.cards, onChunk, rec.history, signal); };
+    suffBump();
+    suffRun(rec);
+    return rec;                    // вернём rec — нужен спекуляции по interim (supersede при расхождении с финалом)
   }
 
   // ---- разбор скрина: снять кадр правой панели (видео вкладки) и отправить в Claude vision ----
@@ -1114,7 +1023,9 @@
     qa.appendChild(img); qa.appendChild(a);
     suffMutate(function () { ans.appendChild(qa); });
     suffBump();
-    return a;
+    var rec = { q: '🖼 скрин', aEl: a, ans: '', wait: '🤖 смотрю на скрин…' };
+    t.qa.push(rec);
+    return rec;
   }
   function suffAskShot() {
     if (!suffMain) return;
@@ -1125,41 +1036,177 @@
     var cv = document.createElement('canvas'); cv.width = cw; cv.height = ch;
     cv.getContext('2d').drawImage(vid, 0, 0, cw, ch);
     var dataUrl = cv.toDataURL('image/jpeg', 0.85);
-    var body = suffAddShot(dataUrl);
-    var acc = '';
-    api.visionStream(dataUrl, function (chunk) {
-      if (!body.isConnected) return;
-      acc += chunk;
-      suffMutate(function () { body.textContent = suffSplitAnswer(acc).main; });
-    }).then(function () {
-      if (!body.isConnected) return;
-      var parts = suffSplitAnswer(acc);
-      suffMutate(function () {
-        body.innerHTML = parts.main ? mdBlock(parts.main) : (acc ? mdBlock(acc) : '<span class="suff-ai-err">пусто</span>');
-        if (parts.more) body.appendChild(suffMoreBlock(parts.more));
-      });
-    }).catch(function (e) {
-      if (!body.isConnected) return;
-      body.innerHTML = (acc ? mdBlock(suffSplitAnswer(acc).main) + '<br>' : '') + '<span class="suff-ai-err">обрыв (' + escHtml(String((e && e.message) || e)) + ')</span>';
-    });
+    var rec = suffAddShot(dataUrl);
+    rec.start = function (onChunk, signal) { return api.visionStream(dataUrl, onChunk, signal); };
+    suffRun(rec);
   }
 
   // накапливаем распознанную речь и спрашиваем ИИ, когда фраза «устоялась» (пауза)
-  var suffAskTimer = null;
+  var suffAskTimer = null, suffBufSince = 0;
+  var SUFF_DEBOUNCE = 1200;    // пауза, после которой фраза считается «устоявшейся»
+  var SUFF_QUICK = 700;        // уже виден готовый вопрос — тянуть незачем
+  var SUFF_MAXWAIT = 6000;     // потолок: длинный монолог без пауз всё равно уходит запросом
+
+  // Коррекция сырого распознавания картой поломок из /api/asr-terms (кириллические манглы → канон: «кофта»→Kafka).
+  // Правит фразу ПЕРЕД маршрутизацией темы и RAG — иначе «кофта» не находит карточки Kafka. Сырое в транскрипте нетронуто.
+  // Модель и без этого чинит термины через ASR_HINT; здесь важна именно правка ДЛЯ retrieval/routing на клиенте.
+  var suffFixRules = [], suffFixLoaded = false, suffFixLoading = false;
+  function suffLoadFixes() {
+    if (suffFixLoaded || suffFixLoading) return;   // уже загружено или уже в полёте — не дублируем запрос
+    suffFixLoading = true;
+    api.asrTerms().then(function (d) {
+      var fixes = (d && d.fixes) || {};
+      Object.keys(fixes).sort(function (a, b) { return b.length - a.length; }).forEach(function (k) {  // длинные ключи первыми
+        var re = new RegExp('(^|[^0-9a-zа-яё])' + engine.escRe(k) + '(?![0-9a-zа-яё])', 'gi');           // по границам слова
+        suffFixRules.push({ re: re, to: fixes[k] });
+      });
+      suffFixLoaded = true; suffFixLoading = false;   // флаг — только на успехе
+    }).catch(function () { suffFixLoading = false; });  // сбой → флаг сброшен, следующий suffEnter повторит (модель всё равно чинит через ASR_HINT)
+  }
+  function suffFixTerms(text) {
+    if (!text || !suffFixRules.length) return text;
+    var out = text;
+    for (var i = 0; i < suffFixRules.length; i++) {
+      out = out.replace(suffFixRules[i].re, (function (r) { return function (m, pre) { return pre + r.to; }; })(suffFixRules[i]));
+    }
+    return out;
+  }
+
+  // фраза уже выглядит как законченный вопрос? (концепт или ≥2 смысловых слова + приличная длина)
+  function suffLooksComplete(phrase) {
+    if (!phrase || phrase.length < 18) return false;
+    var sig = suffTopicSig(phrase);
+    return !!(sig.cats.length || sig.words.length >= 2);
+  }
+
+  // ---- Спекулятивный запрос по interim: стреляем ДО финала, пока собеседник договаривает ----
+  // Web Speech отдаёт финал с задержкой, а промежуточный результат уже готов. Если interim выглядит законченным
+  // вопросом и «устоялся» (не меняется ~450мс) — спрашиваем сразу. На финале сверяем: совпал → ответ уже стримится
+  // (сэкономили паузу+дебаунс), разошёлся → заменяем вопрос корректным В ТОМ ЖЕ узле (suffSupersede).
+  var SUFF_SPEC_STABLE = 450;
+  var suffSpec = null;                 // {rec, text, at} — спекуляция текущей реплики (одна на реплику)
+  var suffSpecTimer = null, suffInterimText = '';
+  function suffSpecDrop() {            // бросить спекуляцию, ОБОРВАВ её висящий стрим — иначе осиротевший держит воркер
+    if (suffSpec && suffSpec.rec && suffSpec.rec.ctrl) { try { suffSpec.rec.ctrl.abort(); } catch (e) {} }
+    suffSpec = null;
+  }
+  function suffSpecClear() {           // сброс спекуляции + таймера стабильности (реплика закрыта / стоп)
+    if (suffSpecTimer) { clearTimeout(suffSpecTimer); suffSpecTimer = null; }
+    suffSpecDrop(); suffInterimText = '';
+  }
+  function suffSpecScan(interim) {      // interim обновился → перезапускаем окно стабильности
+    if (!suffMain || suffPaused) return;
+    var t = (interim || '').replace(/\s+/g, ' ').trim();
+    if (!t || t === suffInterimText) return;
+    suffInterimText = t;
+    if (suffSpecTimer) clearTimeout(suffSpecTimer);
+    suffSpecTimer = setTimeout(function () { suffSpecTimer = null; suffSpeculate(suffInterimText); }, SUFF_SPEC_STABLE);
+  }
+  function suffSpeculate(interim) {
+    if (!suffMain || suffPaused) return;
+    if (suffSpec && Date.now() - suffSpec.at > 8000) suffSpecDrop();   // прошлая спекуляция протухла (финал не пришёл) — оборвать
+    if (suffSpec) return;                                                // одна спекуляция на реплику
+    var cand = suffFixTerms(suffStripBackchannel(interim));
+    if (!cand || suffBackchannelOnly(cand) || !suffLooksComplete(cand)) return;   // не законченный вопрос — ждём финал
+    var rec = suffAsk(cand);                                             // suffAsk сам дедупит и возвращает rec (или null)
+    if (rec) suffSpec = { rec: rec, text: cand, at: Date.now() };
+  }
+  // заменить спекулятивный вопрос корректным финальным В ТОМ ЖЕ узле (без нового блока)
+  function suffSupersede(rec, phrase) {
+    var pn = engine.norm(phrase);
+    if (!pn) return;
+    suffAskedRecently(pn);                                // застолбить, чтобы дубль финала не переспросил
+    rec.q = phrase;
+    if (rec.qEl) rec.qEl.textContent = '🎧 ' + phrase;
+    rec.cards = suffCards(phrase);
+    rec.start = function (onChunk, signal) { return api.askStream(rec.q, rec.cards, onChunk, rec.history, signal); };
+    suffRun(rec);                                         // перезапуск стрима в том же узле (старый ctrl абортится внутри)
+  }
+
+  function suffAskFire() {
+    if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
+    var phrase = suffFixTerms(suffStripBackchannel(suffAskBuf.replace(/\s+/g, ' ').trim()));
+    suffAskBuf = ''; suffBufSince = 0;
+    if (suffSpecTimer) { clearTimeout(suffSpecTimer); suffSpecTimer = null; }   // финал пришёл — окно стабильности не нужно
+    suffInterimText = '';                                 // новая реплика начнёт стабильность с чистого листа
+    if (suffSpec && Date.now() - suffSpec.at > 8000) suffSpecDrop();   // несвежая спекуляция (её финал дропнули) — не наш узел, оборвать
+    if (!phrase) { suffSpecClear(); return; }
+    if (suffSpec) {                                        // была спекуляция по interim — сверяем с финалом
+      var spec = suffSpec; suffSpec = null;
+      if (engine.similar(engine.norm(spec.text), engine.norm(phrase))) return;  // совпало → ответ уже стримится
+      suffSupersede(spec.rec, phrase);                     // разошлось → заменяем в том же узле
+      return;
+    }
+    suffAsk(phrase);   // коррекция терминов уже применена; сырое ушло в транскрипт отдельно
+  }
+  // накопитель речи → вопрос: гейт бэкчэннела + умный дебаунс + потолок ожидания
   function suffAskSchedule() {
+    var phrase = suffAskBuf.replace(/\s+/g, ' ').trim();
+    if (suffBackchannelOnly(phrase)) {                       // одни поддакивания — не вопрос, копить нечего
+      if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
+      suffAskBuf = ''; suffBufSince = 0;
+      return;
+    }
+    if (suffBufSince && Date.now() - suffBufSince >= SUFF_MAXWAIT) { suffAskFire(); return; }  // монолог не тянем
     if (suffAskTimer) clearTimeout(suffAskTimer);
-    suffAskTimer = setTimeout(function () {
-      suffAskTimer = null;
-      var phrase = suffAskBuf.replace(/\s+/g, ' ').trim();
-      suffAskBuf = '';
-      suffAsk(phrase);
-    }, 1200);
+    suffAskTimer = setTimeout(suffAskFire, suffPickWait(phrase));
+  }
+  // задержка дебаунса: готовый вопрос (концепт или ≥2 смысловых слова, длина приличная) — режем короче, иначе ждём паузу
+  function suffPickWait(phrase) {
+    return suffLooksComplete(phrase) ? SUFF_QUICK : SUFF_DEBOUNCE;   // готовый вопрос — режем короче
   }
 
   var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   var suffRec = null, suffStream = null, suffTrack = null, suffOn = false, suffFinal = '';
 
   function suffSetStatus(txt, cls) { if (!suff.status) return; suff.status.textContent = txt; suff.status.className = 'suff-status' + (cls ? ' ' + cls : ''); }
+
+  // ---- полоска громкости вкладки ----
+  // Раньше молчащий суфлёр было не отличить от «собеседник просто не говорит»: если звук вкладки
+  // не подключился, статус всё равно бодро писал «слушаю». Теперь громкость видно, а полную тишину
+  // в первые полминуты после старта называем вслух — почти всегда это забытая галочка в окне захвата.
+  var suffMeterCtx = null, suffMeterTimer = null, suffMeterFn = null, suffLoudAt = 0, suffHeard = false;
+  var SUFF_QUIET_RMS = 0.0004, SUFF_QUIET_WARN_MS = 25000;
+  function suffMeterStop() {
+    if (suffMeterTimer) { clearInterval(suffMeterTimer); suffMeterTimer = null; }
+    if (suffMeterCtx) { try { suffMeterCtx.close(); } catch (e) {} suffMeterCtx = null; }
+    suffMeterFn = null;
+    if (suff.levelBar) suff.levelBar.style.width = '0%';
+    if (suff.level) suff.level.hidden = true;
+    if (suff.levelWarn) suff.levelWarn.hidden = true;
+  }
+  function suffMeterStart(stream) {
+    suffMeterStop();
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      suffMeterCtx = new Ctx();
+      var an = suffMeterCtx.createAnalyser();
+      an.fftSize = 1024;
+      suffMeterCtx.createMediaStreamSource(stream).connect(an);
+      var buf = new Float32Array(an.fftSize);
+      suffMeterFn = function () {
+        an.getFloatTimeDomainData(buf);
+        var acc = 0;
+        for (var i = 0; i < buf.length; i++) acc += buf[i] * buf[i];
+        return Math.sqrt(acc / buf.length);
+      };
+    } catch (e) { return; }
+    suffLoudAt = Date.now(); suffHeard = false;
+    if (suff.level) suff.level.hidden = false;
+    if (suff.levelWarn) suff.levelWarn.hidden = true;
+    suffMeterTimer = setInterval(function () {
+      if (!suffMeterFn) return;
+      var rms = suffMeterFn();
+      if (suff.levelBar) suff.levelBar.style.width = Math.min(100, Math.round(Math.sqrt(rms) * 350)) + '%';
+      if (rms >= SUFF_QUIET_RMS) {
+        suffHeard = true;
+        if (suff.levelWarn) suff.levelWarn.hidden = true;
+        return;
+      }
+      // статус тут не годится: на тишине Chrome перезапускает распознавание, и onstart затирает любое сообщение
+      if (!suffHeard && suff.levelWarn && Date.now() - suffLoudAt > SUFF_QUIET_WARN_MS) suff.levelWarn.hidden = false;
+    }, 150);
+  }
   function suffShowTrans(interim) {
     suff.trans.innerHTML = escHtml(suffFinal.slice(-400)) + (interim ? ' <i class="suff-interim">' + escHtml(interim) + '</i>' : '');
     suff.trans.scrollTop = suff.trans.scrollHeight;
@@ -1187,6 +1234,7 @@
   function suffStopRec() {
     if (suffRestartTimer) { clearTimeout(suffRestartTimer); suffRestartTimer = null; }
     if (suffWatchTimer) { clearInterval(suffWatchTimer); suffWatchTimer = null; }
+    suffSpecClear();   // распознавание встало — незакрытую спекуляцию по interim бросаем
     suffRecAlive = false;
     if (suffRec) { suffRec.onend = null; try { suffRec.stop(); } catch (e) {} suffRec = null; }
   }
@@ -1211,8 +1259,15 @@
         var res = e.results[i];
         if (res.isFinal) fin += res[0].transcript + ' '; else interim += res[0].transcript;
       }
-      if (fin) { suffFinal += fin; suffAskBuf += fin; suffAskSchedule(); } // финал → в накопитель + дебаунс вопроса
+      if (fin) {                                    // финал → в накопитель + дебаунс вопроса
+        suffFinal += fin;
+        suffLogAdd(fin);                            // сырой финал → лог транскрипта (эталон для оценки ASR)
+        if (suffAskBuf === '') suffBufSince = Date.now();   // старт окна накопления — для потолка ожидания
+        suffAskBuf += fin;
+        suffAskSchedule();
+      }
       suffShowTrans(interim);
+      if (interim) suffSpecScan(interim);   // промежуточный результат → может стрельнуть спекулятивно ДО финала
     };
     suffRec.onerror = function (e) {
       if (e.error === 'no-speech' || e.error === 'aborted') return;   // штатные обрывы, поднимет onend
@@ -1258,6 +1313,7 @@
   function suffCaptureStop() { // остановить только захват (аудио+видео), режим суфлёра не трогаем
     suffOn = false;
     suffStopRec();
+    suffMeterStop();
     if (suffStream) { suffStream.getTracks().forEach(function (t) { t.stop(); }); suffStream = null; }
     suffTrack = null;
     suffHideVideo();
@@ -1277,7 +1333,7 @@
     } else {                                // пауза
       suffPaused = true; suffUpdatePauseBtn();
       if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
-      suffAskBuf = '';
+      suffAskBuf = ''; suffBufSince = 0;
       suffStopRec();
       suffSetStatus('пауза — не слушаю');
     }
@@ -1287,7 +1343,7 @@
     if (!suffMain) return;
     if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
     // «чистый лист»: и контент, и контекст для ИИ (history строится из topic.qa — уходит вместе с темами)
-    suffClearTree(); suffAskBuf = ''; suffRecent = [];
+    suffClearTree(); suffAskBuf = ''; suffBufSince = 0; suffRecent = []; suffSpecClear();
     suffFinal = '';                                   // и видимый транскрипт тоже
     if (suff.trans) suff.trans.innerHTML = '';
     suffShow();   // тем нет → плейсхолдер, чистый экран под новый вопрос
@@ -1296,38 +1352,46 @@
     suffCaptureStop();
     suffMain = false; suffPaused = false; suffUpdatePauseBtn();
     if (suffAskTimer) { clearTimeout(suffAskTimer); suffAskTimer = null; }
-    suffClearTree(); suffAskBuf = ''; suffRecent = [];
-    if (suff.toggle) { suff.toggle.classList.remove('on'); suff.toggle.classList.remove('new'); }
+    suffClearTree(); suffAskBuf = ''; suffBufSince = 0; suffRecent = []; suffSpecClear();
+    if (suff.toggle) { suff.toggle.classList.remove('on'); suff.toggle.classList.remove('new'); suff.toggle.textContent = '🎧 Включить'; }
+    document.getElementById('app').classList.remove('suff-live');
     if (suff.bar) suff.bar.hidden = true;
-    els.q.value = ''; state.query = ''; els.clear.hidden = true;
-    els.q.setAttribute('placeholder', Q_PLACEHOLDER);
+    if (suff.ask) suff.ask.value = '';
     suffSetStatus('остановлено');
-    render(); // вернуть закреплённые / поиск
+    els.counter.textContent = '';
   }
 
-  function suffEnter() { // включить режим суфлёра на главной, затем попытаться подключить живой звук
+  function suffEnter() { // включить режим суфлёра, затем попытаться подключить живой звук
+    suffLoadFixes();   // подтягиваем карту поломок ASR (лениво, один раз)
     suffMain = true; suffPaused = false; suffUpdatePauseBtn();
-    if (suff.toggle) suff.toggle.classList.add('on');
+    if (suff.toggle) { suff.toggle.classList.add('on'); suff.toggle.textContent = '⏹ Выключить'; }
+    document.getElementById('app').classList.add('suff-live');   // фокус-режим: крупная горячая зона
     if (suff.bar) suff.bar.hidden = false;
-    els.q.value = ''; state.query = ''; els.clear.hidden = true;
-    els.q.setAttribute('placeholder', '🎧 вопрос собеседника — или впиши сам…');
-    suffClearTree(); suffAskBuf = ''; suffRecent = [];
-    setCat('*');   // включились из категории — уводим на главную, иначе дерева не видно (setCat сам зовёт render→suffShow)
+    if (suff.ask) suff.ask.value = '';
+    suffClearTree(); suffAskBuf = ''; suffBufSince = 0; suffRecent = [];
+    suffShow();
     suffCapture();
   }
   function suffCapture() {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) { suffSetStatus('живой захват недоступен — впиши вопрос вручную'); return; }
     suffSetStatus('выбери вкладку со звонком и включи «Поделиться звуком вкладки»…');
-    navigator.mediaDevices.getDisplayMedia({ video: true, audio: true }).then(function (stream) {
+    // Кадр суфлёру нужен только для превью и разбора скрина, поэтому частоту режем, а ширину ограничиваем:
+    // без ограничений Chrome отдаёт полный retina-кадр (замерено на встрече — 3356×2836), и это лишняя
+    // нагрузка на том же созвоне, из-за которой начинает рваться звук.
+    var videoWant = { frameRate: { ideal: 8, max: 12 }, width: { max: 1920 }, height: { max: 1200 } };
+    navigator.mediaDevices.getDisplayMedia({ video: videoWant, audio: true }).then(function (stream) {
       if (!suffMain) { stream.getTracks().forEach(function (t) { t.stop(); }); return; } // успели выключить
       var au = stream.getAudioTracks();
       if (!au.length) { stream.getTracks().forEach(function (t) { t.stop(); }); suffSetStatus('звук вкладки не выбран — можно вписать вручную', 'err'); return; }
       suffStream = stream; suffTrack = au[0]; suffOn = true;
+      var vt = stream.getVideoTracks()[0];
+      if (vt && vt.applyConstraints) { try { vt.applyConstraints(videoWant); } catch (e) {} }  // Chrome умеет проигнорировать первые
       // видео вкладки показываем справа (звук у элемента заглушен — без эха; распознавание берёт аудио-трек напрямую)
-      if (stream.getVideoTracks().length && suff.video) {
+      if (vt && suff.video) {
         suff.video.srcObject = stream;
         if (suff.videoWrap) suff.videoWrap.hidden = false;
       }
+      suffMeterStart(stream);   // полоска громкости: видно, что звук из вкладки реально идёт
       suffTrack.onended = function () { suffCaptureStop(); suffSetStatus('захват остановлен — впиши вручную'); };
       suffRecFails = 0;
       suffStartRec();
@@ -1336,49 +1400,45 @@
     });
   }
 
-  // из категории/поиска тумблер сперва возвращает к дереву — выключать суфлёр одним кликом отсюда опасно
   if (suff.toggle) suff.toggle.addEventListener('click', function () {
-    if (!suffMain) { suffEnter(); return; }
-    if (!suffViewOn()) { els.q.value = ''; els.clear.hidden = true; state.query = ''; setCat('*'); return; }
-    suffStop();
+    if (suffMain) suffStop(); else suffEnter();
   });
   if (suff.pause) suff.pause.addEventListener('click', suffPauseToggle);
   if (suff.reset) suff.reset.addEventListener('click', suffReset);
   if (suff.shot) suff.shot.addEventListener('click', suffAskShot);
 
+  // ручной вопрос: ASR не расслышал — вписываешь сам, уходит тем же ИИ-ответом в дерево
+  var askTimer = null;
+  if (suff.ask) suff.ask.addEventListener('input', function () {
+    if (askTimer) clearTimeout(askTimer);
+    askTimer = setTimeout(function () {
+      askTimer = null;
+      var v = suff.ask.value.trim();
+      if (!v || !suffMain) return;
+      suffAsk(v); suff.ask.value = '';   // спросили — освобождаем поле под следующий
+    }, 700);
+  });
+
   window.addEventListener('hashchange', route);
 
   document.addEventListener('keydown', function (e) {
-    if (e.key === 'Escape' && location.hash) { location.hash = ''; return; }
-    if (e.key === 'Escape' && els.modal && !els.modal.hidden) { closeModal(); return; }
+    if (e.key !== 'Escape') return;
+    if (srcModal && !srcModal.hidden) { closeSrcAdd(); return; }
+    if (els.modal && !els.modal.hidden) { closeModal(); return; }
     if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') return;
-    var inInput = document.activeElement === els.q;
-    if (e.key === '/' && !inInput) { e.preventDefault(); els.q.focus(); return; }
-    if ((e.key === 'k' || e.key === 'K') && (e.metaKey || e.ctrlKey)) { e.preventDefault(); els.q.focus(); els.q.select(); return; }
-    if (e.key === 'Escape') {
-      if (state.query) clearSearch();
-      else if (state.cat !== '*') setCat('*');
-      else els.q.blur();
-      return;
-    }
-    if (e.key === 'ArrowDown') { e.preventDefault(); moveSel(1); return; }
-    if (e.key === 'ArrowUp') { e.preventDefault(); moveSel(-1); return; }
-    if (e.key === 'Enter') { e.preventDefault(); toggleSelDetail(); }
+    if (location.hash) location.hash = '';
   });
 
-  // --- старт: грузим данные из API ---
-  els.stat.textContent = 'загрузка…';
+  // мини-markdown и подсветка нужны и другим модулям (разбор записи встречи) — отдаём наружу, чтобы не дублировать
+  window.SOBES.md = { block: mdBlock, inline: mdInline, esc: escHtml, code: highlightCode };
+
+  route();
+  // база карточек грузится в фоне — она нужна только как справка модели в суфлёре
   api.load().then(function (data) {
-    CATS = data.categories || []; ITEMS = data.items || []; window.PERSONAL = data.personal || {};
+    ITEMS = data.items || [];
     window.SOBES._items = ITEMS;
     engine.prepare(ITEMS);
-    buildSidebar();
-    setCat('*');
-    route();
-    els.q.focus();
   }).catch(function (e) {
-    els.stat.textContent = 'ошибка загрузки';
-    els.empty.hidden = false;
-    els.empty.innerHTML = '<b>Не удалось загрузить данные</b><span>' + escHtml(e && e.message || '') + '</span>';
+    console.warn('база карточек не загрузилась, суфлёр ответит без справки:', e && e.message);
   });
 })();

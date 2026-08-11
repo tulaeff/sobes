@@ -9,3 +9,5 @@ node_modules/
 db/personal.json
 db/categories.json
 public/data/parts/*.json
+# записи встреч (видео) — большие файлы, в git не держим
+recordings/

@@ -22,23 +22,29 @@ $tgSourceIds = array_map('intval', array_column(
 ));
 
 $ins = $pdo->prepare(
-    'INSERT INTO vacancies(source_id, chat, msg_id, score, title, reason, link, text, link_text, mismatches, apply_status, apply_note)
-     VALUES (:sid, :chat, :mid, :score, :title, :reason, :link, :text, :ltext, :miss, :st, :note)
+    'INSERT INTO vacancies(source_id, chat, msg_id, score, title, reason, link, text, link_text, mismatches, company, apply_status, apply_note)
+     VALUES (:sid, :chat, :mid, :score, :title, :reason, :link, :text, :ltext, :miss, :company, :st, :note)
      ON CONFLICT (source_id, msg_id) DO NOTHING'
 );
+// соответствие ниже порога — в работу не берём: ни отклика, ни поиска контактов, сразу «Завершено»
+const SCORE_MIN = 70;
+
 $saved = 0;
 foreach (($in['matches'] ?? []) as $v) {
     $sid = (int)$v['source_id'];
     $isTg = in_array($sid, $tgSourceIds, true);
+    $weak = (int)($v['score'] ?? 0) < SCORE_MIN;
     $ins->execute([
         ':sid' => $sid, ':chat' => (string)($v['chat'] ?? ''), ':mid' => (int)$v['msg_id'],
-        ':score' => (int)($v['score'] ?? 0), ':title' => (string)($v['title'] ?? ''),
+        ':score' => (int)($v['score'] ?? 0), ':title' => trim((string)($v['title'] ?? '')), // краевые \n от модели ломают сравнение групп
         ':reason' => (string)($v['reason'] ?? ''), ':link' => (string)($v['link'] ?? ''),
         ':text' => (string)($v['text'] ?? ''),
         ':ltext' => (string)($v['link_text'] ?? ''),
         ':miss' => json_encode(array_values((array)($v['mismatches'] ?? [])), JSON_UNESCAPED_UNICODE),
-        ':st' => $isTg ? 'needs_manual' : 'new',
-        ':note' => $isTg ? 'Тг-вакансия — контакт в посте, отклик только вручную' : '',
+        ':company' => trim((string)($v['company'] ?? '')), // работодатель — по нему дедуп отличает разные вакансии с одним названием
+        ':st' => $weak ? 'done' : ($isTg ? 'needs_manual' : 'new'),
+        ':note' => $weak ? 'соответствие ниже ' . SCORE_MIN . '% — в работу не берём'
+                         : ($isTg ? 'Тг-вакансия — контакт в посте, отклик только вручную' : ''),
     ]);
     $saved += $ins->rowCount();
 }
