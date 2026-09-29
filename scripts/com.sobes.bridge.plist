@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Мост суфлёра на подписку Claude: scripts/bridge.py, порт 47391.
+         Копия живёт в ~/Library/LaunchAgents/. Управление:
+           перезапуск: launchctl kickstart -k gui/$(id -u)/com.sobes.bridge
+           выключить:  launchctl bootout gui/$(id -u)/com.sobes.bridge
+         ProcessType=Interactive обязателен: без него macOS относит агент к Standard,
+         App Nap усыпляет простаивающие процессы claude из пула, и первый токен
+         скачет 2-10с вместо ~1с (замер 29.09.2026). Background тем более нельзя
+         (см. грабли whisper-воркера в CLAUDE.md). -->
+    <key>Label</key><string>com.sobes.bridge</string>
+    <key>ProcessType</key><string>Interactive</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/tulaeff/Projects/sobes/scripts/bridge.py</string>
+    </array>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>StandardOutPath</key><string>/Users/tulaeff/Library/Logs/sobes-bridge.log</string>
+    <key>StandardErrorPath</key><string>/Users/tulaeff/Library/Logs/sobes-bridge.log</string>
+</dict>
+</plist>

@@ -11,3 +11,4 @@ db/categories.json
 public/data/parts/*.json
 # записи встреч (видео) — большие файлы, в git не держим
 recordings/
+__pycache__/

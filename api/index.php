@@ -132,21 +132,27 @@ function cacheBust(): void {
     try { $r = redis(); if ($r) $r->del(CACHE_KEY, ASR_TERMS_KEY); } catch (Throwable $e) {}  // словарь стека тоже пересобрать
 }
 
-// Ключ Anthropic: из env-переменной контейнера или из примонтированного секрет-файла (вне репозитория)
-function anthropicKey(): ?string {
-    $k = getenv('ANTHROPIC_API_KEY');
+// Секрет по имени: из env-переменной контейнера или из примонтированного секрет-файла (вне репозитория)
+function secretVar(string $name): ?string {
+    $k = getenv($name);
     if ($k) return trim($k);
     $f = '/var/www/secret.env';
     $found = null;
     if (is_file($f)) {
         foreach (file($f, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
-            if (preg_match('/^\s*ANTHROPIC_API_KEY\s*=\s*(.+)$/', $line, $m)) {
-                $found = trim($m[1], " \t\"'"); // последняя строка выигрывает (свежедописанный ключ)
+            if (preg_match('/^\s*' . $name . '\s*=\s*(.+)$/', $line, $m)) {
+                $found = trim($m[1], " \t\"'"); // последняя строка выигрывает (свежедописанное значение)
             }
         }
     }
     return $found;
 }
+function anthropicKey(): ?string { return secretVar('ANTHROPIC_API_KEY'); }
+// Мост подписки (scripts/bridge.py, launchd com.sobes.bridge): есть SOBES_LLM_URL в секретах —
+// стрим идёт через него на OAuth-токене подписки, а «ключом» служит BRIDGE_SECRET
+// (мост слушает 0.0.0.0, т.к. docker до 127.0.0.1 мака не достаёт, и без секрета отдаёт 401).
+function bridgeUrl(): ?string { return secretVar('SOBES_LLM_URL'); }
+function llmKey(): ?string { return bridgeUrl() ? secretVar('BRIDGE_SECRET') : anthropicKey(); }
 
 // стримит ответ Anthropic по SSE прямо в тело HTTP-ответа (text/event-stream — не буферизуется nginx). Завершает запрос.
 // Ошибки НЕ подмешиваются в текст ответа, а уходят управляющей строкой «\x1e e{json}» — клиент показывает их отдельно
@@ -195,7 +201,7 @@ function anthropicStream(string $payload, string $key): void {
         }
         return 0;
     };
-    $run = function (string $url) use ($payload, $key, $write, $progress, &$buf) {
+    $run = function (string $url) use ($payload, &$key, $write, $progress, &$buf) {
         $buf = '';
         $ch = curl_init($url);
         curl_setopt_array($ch, [
@@ -218,7 +224,7 @@ function anthropicStream(string $payload, string $key): void {
         return $r;
     };
 
-    $url = ANTHROPIC_URL;
+    $url = bridgeUrl() ?: ANTHROPIC_URL;
     $triedDirect = false;
     $attempt = 0;
     $code = 0; $curlErr = ''; $errno = 0;
@@ -227,10 +233,11 @@ function anthropicStream(string $payload, string $key): void {
         [$code, $curlErr, $errno] = $run($url);
         if ($sent) break;                                  // текст уже пошёл — падать на фолбэк/ретрай поздно
 
-        // прокси лёг → один раз уходим напрямую
+        // прокси/мост лёг → один раз уходим напрямую (мимо моста — только если есть настоящий API-ключ)
         $connFail = in_array($errno, [CURLE_COULDNT_CONNECT, CURLE_COULDNT_RESOLVE_HOST, CURLE_GOT_NOTHING, CURLE_RECV_ERROR, CURLE_SEND_ERROR], true);
-        if (!$triedDirect && ($connFail || $code === 502 || $code === 504)) {
-            error_log('sobes: keepalive-прокси недоступен (errno=' . $errno . ', code=' . $code . '), иду напрямую');
+        if (!$triedDirect && ($connFail || $code === 502 || $code === 504) && (!bridgeUrl() || anthropicKey())) {
+            error_log('sobes: ' . (bridgeUrl() ? 'мост подписки' : 'keepalive-прокси') . ' недоступен (errno=' . $errno . ', code=' . $code . '), иду напрямую');
+            if (bridgeUrl()) $key = anthropicKey();
             $url = ANTHROPIC_URL_DIRECT; $triedDirect = true;
             continue;
         }
@@ -452,8 +459,8 @@ try {
         $b = body();
         $question = trim((string)($b['question'] ?? ''));
         if ($question === '') fail('пустой вопрос');
-        $key = anthropicKey();
-        if (!$key) fail('нет ANTHROPIC_API_KEY (положи в ~/.config/sobes/env и пересоздай стек)', 500);
+        $key = llmKey();
+        if (!$key) fail('нет ни ANTHROPIC_API_KEY, ни моста подписки (SOBES_LLM_URL) — см. ~/.config/sobes/env', 500);
 
         // контекст из присланных фронтом релевантных карточек (заземление, чтобы не выдумывал)
         $ctx = '';
@@ -513,8 +520,8 @@ try {
         $b = body();
         $img = (string)($b['image'] ?? '');
         if ($img === '') fail('нет картинки');
-        $key = anthropicKey();
-        if (!$key) fail('нет ANTHROPIC_API_KEY (положи в ~/.config/sobes/env)', 500);
+        $key = llmKey();
+        if (!$key) fail('нет ни ANTHROPIC_API_KEY, ни моста подписки (SOBES_LLM_URL) — см. ~/.config/sobes/env', 500);
 
         // принимаем data-URL или сырой base64
         $media = 'image/jpeg';
